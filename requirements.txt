@@ -5,3 +5,7 @@ fastapi>=0.115.0
 uvicorn>=0.34.0
 httpx>=0.28.0
 python-dotenv>=1.1.0
+pypdf>=5.4.0
+pytesseract>=0.3.13
+Pillow>=11.0.0
+pillow-avif-plugin>=1.5.5

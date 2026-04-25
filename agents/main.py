@@ -1,27 +1,23 @@
-import os
-from uagents import Agent, Bureau
-from dotenv import load_dotenv
-from chat_protocol import chat_proto
+from uagents import Bureau
 
-load_dotenv()
-
-SEED = os.getenv("AGENT_SEED", "careloop-agent-seed-phrase-change-me")
-
-agent = Agent(
-    name="careloop",
-    seed=SEED,
-    port=8001,
-    endpoint=["http://localhost:8001/submit"],
-    agentverse=os.getenv("AGENTVERSE_API_KEY", ""),
-)
-
-agent.include(chat_proto, publish_manifest=True)
+from adherence_agent import agent as adherence_agent
+from appointment_agent import agent as appointment_agent
+from caregiver_agent import agent as caregiver_agent
+from orchestrator_agent import agent as orchestrator_agent
+from pharmacy_agent import agent as pharmacy_agent
+from prescription_agent import agent as prescription_agent
+from triage_agent import agent as triage_agent
 
 
-@agent.on_event("startup")
-async def startup(ctx):
-    ctx.logger.info(f"Careloop agent address: {ctx.agent.address}")
+bureau = Bureau()
+bureau.add(orchestrator_agent)
+bureau.add(pharmacy_agent)
+bureau.add(prescription_agent)
+bureau.add(appointment_agent)
+bureau.add(caregiver_agent)
+bureau.add(triage_agent)
+bureau.add(adherence_agent)
 
 
 if __name__ == "__main__":
-    agent.run()
+    bureau.run()
