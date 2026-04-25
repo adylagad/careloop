@@ -8,7 +8,11 @@ from models import (
     PharmacyRecommendation,
     PrescriptionDocumentRequest,
 )
-from prescription_scanner import extract_prescription_text, summarize_prescription_text
+from prescription_scanner import (
+    ExtractedPrescription,
+    extract_prescription_text,
+    summarize_prescription_text,
+)
 
 
 PHARMACY_SERVICE_FEE_FET = "0.05"
@@ -196,8 +200,10 @@ def explain_prescription(request: CareRequest) -> CareResult:
     )
 
 
-def explain_prescription_document(request: PrescriptionDocumentRequest) -> CareResult:
-    extracted = extract_prescription_text(request)
+def result_from_extracted_prescription(
+    request: PrescriptionDocumentRequest,
+    extracted: ExtractedPrescription,
+) -> CareResult:
     if not extracted.text:
         summary = (
             "I could not read the prescription document yet. Please upload a clearer photo, "
@@ -248,6 +254,10 @@ def explain_prescription_document(request: PrescriptionDocumentRequest) -> CareR
         ],
         timeline_events=["Prescription document scanned", "Prescription explained", "Pharmacy handoff prepared"],
     )
+
+
+def explain_prescription_document(request: PrescriptionDocumentRequest) -> CareResult:
+    return result_from_extracted_prescription(request, extract_prescription_text(request))
 
 
 def book_appointment(request: CareRequest) -> CareResult:

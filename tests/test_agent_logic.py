@@ -19,7 +19,7 @@ from domain import (  # noqa: E402
     triage_request,
 )
 from models import CareRequest, PrescriptionDocumentRequest  # noqa: E402
-from prescription_agent import prescription_chat_response  # noqa: E402
+from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat_response  # noqa: E402
 
 
 class AgentLogicTests(unittest.TestCase):
@@ -180,6 +180,32 @@ class AgentLogicTests(unittest.TestCase):
 
         self.assertIn("upload", response.lower())
         self.assertNotIn("Medication not confidently detected", response)
+
+    def test_prescription_chat_answers_followup_from_last_scan(self):
+        sender = "user-followup"
+        PRESCRIPTION_CONTEXT_BY_SENDER.pop(sender, None)
+
+        first_response = prescription_chat_response(
+            None,
+            sender,
+            (
+                "Prescription Medicine List\n"
+                "Amoxicillin 500mg 3timesaday Oral Bacterial infections 2\n"
+                "Metformin 500mg Twiceaday Oral Type 2 diabetes 3\n"
+                "Albuterol 90mcg Asneeded Inhalation Asthma or COPD 3"
+            ),
+        )
+        followup_response = prescription_chat_response(
+            None,
+            sender,
+            "is there any order to take the medications",
+        )
+
+        self.assertIn("Amoxicillin", first_response)
+        self.assertIn("Amoxicillin", followup_response)
+        self.assertIn("Metformin", followup_response)
+        self.assertIn("usually is not a single required order", followup_response)
+        self.assertNotIn("upload", followup_response.lower())
 
 
 if __name__ == "__main__":

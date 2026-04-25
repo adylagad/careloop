@@ -42,6 +42,11 @@ to test rejection handling.
 also accepts `PrescriptionDocumentRequest` messages with `document_path`, `document_uri`,
 or `document_base64`. PDFs use embedded-text extraction through `pypdf`; photos use
 Tesseract OCR through `pytesseract` plus the system `tesseract` binary.
+After a scan, the chat agent keeps the latest prescription context per ASI sender so
+follow-up questions like timing, order, food, refills, or missed-dose safety can be
+answered conversationally. If `ASI1_API_KEY` or `ASI_ONE_API_KEY` is set, follow-ups use
+ASI:One chat completions with the extracted prescription as context; otherwise the agent
+uses a deterministic local safety fallback.
 
 ASI:One/resource prompts can include a file/resource URI when supported by the client.
 For local testing, a plain chat prompt can reference a local file:
