@@ -4,6 +4,7 @@ from models import (
     CareRequest,
     CareResult,
     PaymentQuote,
+    PharmacyFulfillmentStatus,
     PharmacyOption,
     PharmacyRecommendation,
     PrescriptionDocumentRequest,
@@ -16,6 +17,7 @@ from prescription_scanner import (
 
 
 PHARMACY_SERVICE_FEE_FET = "0.05"
+PHARMACY_MONITOR_CHECK_MINUTES = 15
 
 
 def make_case_id(prefix: str = "case") -> str:
@@ -113,6 +115,200 @@ def build_pharmacy_recommendation(request: CareRequest) -> PharmacyRecommendatio
     )
 
 
+def _infer_pharmacy_name(text: str) -> str:
+    normalized = normalize_text(text)
+    pharmacy_map = {
+        "cvs": "CVS Pharmacy - Westwood Blvd",
+        "walgreens": "Walgreens - Wilshire Blvd",
+        "rite aid": "Rite Aid - Santa Monica",
+        "ucla": "UCLA Community Pharmacy",
+        "westwood": "Westwood Care Pharmacy",
+    }
+    return next(
+        (display for key, display in pharmacy_map.items() if key in normalized),
+        "Westwood Care Pharmacy",
+    )
+
+
+def _status_for_request(text: str, medication: str, preference: str, monitor_tick: int = 0) -> tuple[str, str, str | None]:
+    normalized = normalize_text(text)
+    med_key = medication.lower()
+    wants_delivery = "delivery" in preference.lower() or "deliver" in normalized
+
+    if "insurance" in normalized:
+        return "action_needed", "Insurance issue needs review", "Confirm insurance or ask pharmacy for cash price."
+    if "out of stock" in normalized or "shortage" in normalized:
+        return "delayed", "Out of stock today", "Ask the pharmacy to transfer or order the medication."
+    if "clarification" in normalized or "prescriber clarification" in normalized:
+        return "action_needed", "Pharmacy needs prescriber clarification", "The pharmacy is waiting for the doctor's office."
+
+    if monitor_tick >= 2:
+        return (
+            "ready_for_delivery" if wants_delivery else "ready_for_pickup",
+            "Ready now",
+            None,
+        )
+    if monitor_tick == 1:
+        return "in_progress", "Pharmacist verification in progress; estimated ready in 20 minutes", None
+
+    if med_key == "atorvastatin":
+        return (
+            "ready_for_delivery" if wants_delivery else "ready_for_pickup",
+            "Ready now",
+            None,
+        )
+    if med_key == "metformin":
+        return "in_progress", "Received by pharmacy; estimated ready in 45 minutes", None
+    if med_key == "lisinopril":
+        return "delayed", "Delayed; estimated later today", "Pharmacy is confirming stock."
+    if med_key == "albuterol":
+        return "action_needed", "Needs pharmacist review before release", "Ask whether the inhaler is ready and whether counseling is required."
+
+    return "received", "Prescription received; status check pending", None
+
+
+def _friendly_status(status: str, preference: str) -> tuple[str | None, str | None, str]:
+    wants_delivery = "delivery" in preference.lower()
+    if status == "ready_for_pickup":
+        return "Today before 8 PM", None, "Bring ID and insurance card if the pharmacy requests it."
+    if status == "ready_for_delivery":
+        return None, "Delivery today, 6-8 PM", "Keep phone nearby in case the courier or pharmacy calls."
+    if status == "in_progress":
+        return None, None, "No action needed yet. I can keep checking and notify you when it is ready."
+    if status == "delayed":
+        return None, None, "A delay may affect when the patient can start the medication. Keep the prescriber in the loop if urgent."
+    if status == "action_needed":
+        return None, None, "This needs pharmacy or prescriber action before the medicine can be released."
+    return None, None, "I can keep checking this status until it changes."
+
+
+def build_pharmacy_fulfillment_status(
+    request: CareRequest,
+    *,
+    monitor_tick: int = 0,
+) -> PharmacyFulfillmentStatus:
+    medication, dosage = infer_medication(request.text)
+    location = value_from_context(request, "location", "Los Angeles, CA")
+    preference = value_from_context(request, "preference", "pickup")
+    pharmacy_name = value_from_context(request, "pharmacy_name", _infer_pharmacy_name(request.text))
+    status, eta, action_needed = _status_for_request(request.text, medication, preference, monitor_tick)
+    pickup_window, delivery_window, senior_note = _friendly_status(status, preference)
+    reference = f"careloop-pharmacy-monitor-{request.case_id}-{uuid4().hex[:8]}"
+    quote = PaymentQuote(
+        case_id=request.case_id,
+        service_name="CareLoop Pharmacy Fulfillment Monitor",
+        amount=PHARMACY_SERVICE_FEE_FET,
+        reference=reference,
+    )
+
+    return PharmacyFulfillmentStatus(
+        case_id=request.case_id,
+        medication=medication,
+        dosage=dosage,
+        pharmacy_name=pharmacy_name,
+        location=location,
+        preference=preference,
+        status=status,
+        eta=eta,
+        pickup_window=pickup_window,
+        delivery_window=delivery_window,
+        action_needed=action_needed,
+        senior_note=senior_note,
+        last_checked="mock pharmacy adapter just now",
+        next_check_minutes=None if status.startswith("ready") else PHARMACY_MONITOR_CHECK_MINUTES,
+        payment_quote=quote,
+    )
+
+
+def format_pharmacy_fulfillment_preview(status: PharmacyFulfillmentStatus) -> str:
+    ready_text = "Yes" if status.status.startswith("ready") else "Not yet"
+    lines = [
+        "CareLoop Pharmacy Fulfillment",
+        "",
+        f"Medication: {status.medication} {status.dosage}",
+        f"Pharmacy: {status.pharmacy_name}",
+        f"Location: {status.location}",
+        f"Preference: {status.preference}",
+        "",
+        f"Ready now: {ready_text}",
+        f"Status: {status.eta}",
+    ]
+    if status.pickup_window:
+        lines.append(f"Pickup window: {status.pickup_window}")
+    if status.delivery_window:
+        lines.append(f"Delivery window: {status.delivery_window}")
+    if status.action_needed:
+        lines.append(f"Action needed: {status.action_needed}")
+    lines.extend(
+        [
+            f"Last checked: {status.last_checked}",
+            "",
+            f"Senior safety note: {status.senior_note}",
+            "",
+            f"Active monitoring fee: {status.payment_quote.amount} FET via {status.payment_quote.payment_method}",
+            f"Payment reference: {status.payment_quote.reference}",
+            "Paid monitoring keeps checking automatically and sends an update when the pharmacy status changes.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def pharmacy_monitoring_result(
+    request: CareRequest,
+    status: PharmacyFulfillmentStatus,
+) -> CareResult:
+    if status.status.startswith("ready"):
+        summary = (
+            f"Yes, {status.medication} {status.dosage} is ready at {status.pharmacy_name}. "
+            f"{status.pickup_window or status.delivery_window or status.eta}. {status.senior_note}"
+        )
+        timeline_status = "Prescription ready"
+    else:
+        summary = (
+            f"I started active monitoring for {status.medication} {status.dosage} at {status.pharmacy_name}. "
+            f"Current status: {status.eta}. I will check again every "
+            f"{status.next_check_minutes or PHARMACY_MONITOR_CHECK_MINUTES} minutes in the demo monitor."
+        )
+        timeline_status = "Pharmacy monitoring started"
+
+    return CareResult(
+        case_id=request.case_id,
+        agent_name="careloop-pharmacy-options",
+        status="completed" if status.status.startswith("ready") else "monitoring",
+        summary=summary,
+        next_actions=[
+            "Notify the patient or caregiver when the status changes.",
+            "Confirm pharmacist counseling before the patient starts a new medication.",
+            "Escalate if the pharmacy reports an insurance issue, stock delay, or prescriber clarification.",
+        ],
+        timeline_events=[
+            "Pharmacy status checked",
+            f"Payment completed: {status.payment_quote.amount} FET",
+            timeline_status,
+        ],
+    )
+
+
+def pharmacy_status_update_result(
+    request: CareRequest,
+    status: PharmacyFulfillmentStatus,
+) -> CareResult:
+    return CareResult(
+        case_id=request.case_id,
+        agent_name="careloop-pharmacy-options",
+        status=status.status,
+        summary=(
+            f"Pharmacy update: {status.medication} {status.dosage} at {status.pharmacy_name} is "
+            f"{status.eta}. {status.pickup_window or status.delivery_window or status.senior_note}"
+        ),
+        next_actions=[
+            "Tell the patient or caregiver directly.",
+            "Confirm final medication instructions with the pharmacist.",
+        ],
+        timeline_events=["Auto-check completed", f"Status changed: {status.status}"],
+    )
+
+
 def pharmacy_paid_result(
     request: CareRequest,
     recommendation: PharmacyRecommendation,
@@ -147,14 +343,14 @@ def pharmacy_unpaid_result(request: CareRequest, reason: str) -> CareResult:
         agent_name="careloop-pharmacy-options",
         status="payment_required",
         summary=(
-            "Pharmacy comparison is ready, but final ranked recommendations "
-            f"are held until the CareLoop Pharmacy Navigator fee is paid. Reason: {reason}"
+            "Pharmacy status can be checked once, but active automatic monitoring "
+            f"is held until the CareLoop Pharmacy Fulfillment fee is paid. Reason: {reason}"
         ),
         next_actions=[
-            "Approve the 0.05 FET service fee to unlock the ranked pharmacy recommendation.",
-            "Reject payment to receive only general pharmacy safety guidance.",
+            "Approve the 0.05 FET service fee to monitor until the prescription is ready.",
+            "Reject payment to receive only one-time pharmacy safety guidance.",
         ],
-        timeline_events=["Payment requested for pharmacy navigation"],
+        timeline_events=["Payment requested for pharmacy monitoring"],
     )
 
 
@@ -382,7 +578,7 @@ def orchestrate_care(request: CareRequest) -> CareResult:
         status="completed",
         summary=summary,
         next_actions=[
-            "Invoke careloop-pharmacy-options for paid pharmacy ranking.",
+            "Invoke careloop-pharmacy-options for paid prescription fulfillment monitoring.",
             "Show timeline in the demo flow.",
             "Use ASI:One to ask the orchestrator for the full care journey.",
         ],

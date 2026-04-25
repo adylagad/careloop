@@ -56,3 +56,21 @@ class PharmacyRecommendation(Model):
     options: list[PharmacyOption]
     selected_option: PharmacyOption
     payment_quote: PaymentQuote
+
+
+class PharmacyFulfillmentStatus(Model):
+    case_id: str
+    medication: str
+    dosage: str
+    pharmacy_name: str
+    location: str
+    preference: str
+    status: str
+    eta: str
+    pickup_window: str | None = None
+    delivery_window: str | None = None
+    action_needed: str | None = None
+    senior_note: str
+    last_checked: str
+    next_check_minutes: int | None = None
+    payment_quote: PaymentQuote

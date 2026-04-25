@@ -23,8 +23,10 @@ python main.py               # run all CareLoop specialists together
 The repo currently focuses only on Fetch.ai/uAgents work. No frontend or backend service
 layer is included yet.
 
-- `careloop-pharmacy-options` — Pharmacy Navigator, the first OmegaClaw specialist target,
-  with Chat Protocol and FET Payment Protocol seller flow.
+- `careloop-pharmacy-options` — Pharmacy Fulfillment, the first OmegaClaw specialist
+  target. It assumes the doctor already sent the prescription to a pharmacy, then
+  checks mocked pharmacy readiness, starts paid FET monitoring, and sends readiness
+  updates when the status changes.
 - `careloop-prescription-explainer` — senior-friendly mocked prescription explanations.
 - `careloop-appointment-booking` — mocked doctor search, booking, and prep checklist.
 - `careloop-caregiver-notifier` — SMS/email-style caregiver updates.
@@ -34,7 +36,17 @@ layer is included yet.
 
 For local payment testing, run `payment_buyer_agent.py` as a demo buyer after setting
 `PHARMACY_AGENT_ADDRESS` to the pharmacy agent address. Set `PAYMENT_BUYER_MODE=reject`
-to test rejection handling.
+to test rejection handling. The buyer asks the pharmacy agent to keep checking a
+doctor-sent prescription until it is ready for pickup.
+
+## Pharmacy Fulfillment Agent
+
+`careloop-pharmacy-options` is now framed around post-visit prescription fulfillment.
+The patient does not call the pharmacy manually. The agent checks a mocked pharmacy
+status adapter for states such as received, in progress, delayed, action needed, ready
+for pickup, or ready for delivery. One-time ASI:One chat checks are free previews; paid
+uAgent requests use the FET Payment Protocol to unlock active monitoring until a terminal
+status update is available.
 
 ## Prescription Agent Document Intake
 

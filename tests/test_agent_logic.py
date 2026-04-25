@@ -10,11 +10,12 @@ AGENTS = ROOT / "agents"
 sys.path.insert(0, str(AGENTS))
 
 from domain import (  # noqa: E402
-    build_pharmacy_recommendation,
+    build_pharmacy_fulfillment_status,
     explain_prescription_document,
     explain_prescription,
     orchestrate_care,
-    pharmacy_paid_result,
+    pharmacy_monitoring_result,
+    pharmacy_status_update_result,
     pharmacy_unpaid_result,
     triage_request,
 )
@@ -31,28 +32,38 @@ class AgentLogicTests(unittest.TestCase):
             context=context,
         )
 
-    def test_pharmacy_recommendation_has_fet_quote(self):
+    def test_pharmacy_fulfillment_status_has_fet_quote(self):
         request = self.make_request(
-            "Need delivery for atorvastatin 20mg",
-            {"location": "Los Angeles, CA", "preference": "delivery"},
+            "My doctor sent atorvastatin 20mg to CVS Westwood. Is it ready for delivery?",
+            {
+                "location": "Los Angeles, CA",
+                "preference": "delivery",
+                "pharmacy_name": "CVS Pharmacy - Westwood Blvd",
+            },
         )
-        recommendation = build_pharmacy_recommendation(request)
+        status = build_pharmacy_fulfillment_status(request)
 
-        self.assertEqual(recommendation.medication, "Atorvastatin")
-        self.assertEqual(recommendation.payment_quote.currency, "FET")
-        self.assertEqual(recommendation.payment_quote.payment_method, "fet_direct")
-        self.assertGreaterEqual(len(recommendation.options), 3)
+        self.assertEqual(status.medication, "Atorvastatin")
+        self.assertEqual(status.status, "ready_for_delivery")
+        self.assertEqual(status.payment_quote.currency, "FET")
+        self.assertEqual(status.payment_quote.payment_method, "fet_direct")
 
-    def test_pharmacy_payment_results(self):
-        request = self.make_request("metformin 500mg pickup")
-        recommendation = build_pharmacy_recommendation(request)
+    def test_pharmacy_monitoring_results(self):
+        request = self.make_request("metformin 500mg sent to CVS Westwood for pickup")
+        status = build_pharmacy_fulfillment_status(request)
 
-        paid = pharmacy_paid_result(request, recommendation)
+        paid = pharmacy_monitoring_result(request, status)
+        update = pharmacy_status_update_result(
+            request,
+            build_pharmacy_fulfillment_status(request, monitor_tick=2),
+        )
         unpaid = pharmacy_unpaid_result(request, "demo reject")
 
-        self.assertEqual(paid.status, "completed")
+        self.assertEqual(paid.status, "monitoring")
+        self.assertEqual(update.status, "ready_for_pickup")
         self.assertTrue(any("Payment completed" in event for event in paid.timeline_events))
         self.assertEqual(unpaid.status, "payment_required")
+        self.assertIn("active automatic monitoring", unpaid.summary)
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))

@@ -85,8 +85,12 @@ async def startup(ctx: Context):
             CareRequest(
                 case_id=make_case_id("payment-demo"),
                 user_id=ctx.agent.address,
-                text="Find delivery options for atorvastatin 20mg near Westwood",
-                context={"location": "Los Angeles, CA", "preference": "delivery"},
+                text="My doctor sent Metformin 500mg to CVS Westwood. Keep checking until it is ready for pickup.",
+                context={
+                    "location": "Los Angeles, CA",
+                    "preference": "pickup",
+                    "pharmacy_name": "CVS Pharmacy - Westwood Blvd",
+                },
             ),
         )
         ctx.logger.info(f"{AGENT_NAME}: sent demo CareRequest to pharmacy agent")
