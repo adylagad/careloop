@@ -25,6 +25,7 @@ SUPPORTED_PDF_EXTENSIONS = {".pdf"}
 
 
 MEDICATION_NAMES = {
+    "amoxicillin": "Amoxicillin",
     "atorvastatin": "Atorvastatin",
     "lipitor": "Atorvastatin",
     "metformin": "Metformin",
@@ -320,7 +321,13 @@ def looks_like_prescription_text(text: str) -> bool:
 
 
 def _dose_match(text: str) -> str | None:
-    match = re.search(r"((?:\d+(?:\.\d+)?)|(?:\.\d+))\s*(mg|mcg|g|ml|units|iu)\b", text, re.IGNORECASE)
+    normalized = (
+        text.replace("O", "0")
+        .replace("o", "0")
+        .replace("S", "5")
+        .replace("s", "5")
+    )
+    match = re.search(r"((?:\d+(?:\.\d+)?)|(?:\.\d+))\s*(mg|mcg|g|ml|units|iu)\b", normalized, re.IGNORECASE)
     if not match:
         return None
     amount = match.group(1)
@@ -330,6 +337,20 @@ def _dose_match(text: str) -> str | None:
 
 
 def _direction_match(text: str) -> str | None:
+    compact = re.sub(r"\s+", "", text.lower())
+    frequency_map = {
+        "twiceadaybeforemeals": "twice a day before meals",
+        "3timesaday": "3 times a day",
+        "threetimesaday": "3 times a day",
+        "twiceaday": "twice a day",
+        "twicedaily": "twice daily",
+        "oncedaily": "once daily",
+        "asneeded": "as needed",
+    }
+    for key, value in frequency_map.items():
+        if key in compact:
+            return value
+
     match = re.search(
         r"(?:sig|directions?)[:\s]+(.+?)(?:\bqty\b|\bquantity\b|\brefills?\b|\bprescriber\b|\bdoctor\b|\bdr\.|$)",
         text,
@@ -353,6 +374,23 @@ def _known_medication_in_text(text: str) -> str | None:
     return next((display for key, display in MEDICATION_NAMES.items() if key in lowered), None)
 
 
+def _indication_from_line(line: str) -> str | None:
+    known_indications = [
+        "bacterial infections",
+        "type 2 diabetes",
+        "hypertension",
+        "hyperlipidemia",
+        "asthma or copd exacerbation",
+        "asthma",
+        "copd",
+    ]
+    lowered = " ".join(line.lower().split())
+    for indication in known_indications:
+        if indication in lowered:
+            return indication
+    return None
+
+
 def _field_after(pattern: str, text: str) -> str | None:
     return _first_match(pattern, text, re.IGNORECASE)
 
@@ -370,7 +408,7 @@ def parse_prescription_items(text: str) -> list[PrescriptionItem]:
 
         window_before = " ".join(lines[max(0, index - 3):index])
         window_after = " ".join(lines[index:index + 5])
-        directions = _direction_match(window_before) or _direction_match(window_after)
+        directions = _direction_match(line) or _direction_match(window_before) or _direction_match(window_after)
         if not directions:
             directions = "directions not confidently detected"
 
@@ -378,22 +416,30 @@ def parse_prescription_items(text: str) -> list[PrescriptionItem]:
             r"\(qty\s*(\d+)\)", line
         )
         refills = _field_after(r"refills?[:#\s]+(\d+)", window_after)
+        if refills is None and "medication details" in joined.lower():
+            line_numbers = re.findall(r"\b(\d+)\b", line)
+            if line_numbers:
+                refills = line_numbers[-1]
         prescriber = None
         for candidate in lines[index + 1:index + 5]:
             if candidate.lower().startswith("dr.") or "doctor" in candidate.lower() or "prescriber" in candidate.lower():
                 prescriber = candidate
                 break
 
+        item = PrescriptionItem(
+            medication=medication,
+            dose=dose or "dose not confidently detected",
+            directions=directions,
+            quantity=quantity,
+            refills=refills,
+            prescriber=prescriber,
+            raw_line=line,
+        )
+        indication = _indication_from_line(line)
+        if indication:
+            item.raw_line = f"{line} | indication: {indication}"
         items.append(
-            PrescriptionItem(
-                medication=medication,
-                dose=dose or "dose not confidently detected",
-                directions=directions,
-                quantity=quantity,
-                refills=refills,
-                prescriber=prescriber,
-                raw_line=line,
-            )
+            item
         )
 
     if items:
@@ -445,6 +491,8 @@ def summarize_prescription_text(text: str, source: str, warnings: list[str]) -> 
             details.append(f"   Refills: {item.refills}")
         if item.prescriber:
             details.append(f"   Prescriber: {item.prescriber}")
+        if item.raw_line and " | indication: " in item.raw_line:
+            details.append(f"   For: {item.raw_line.split(' | indication: ', 1)[1]}")
         caregiver_meds.append(f"{item.medication} {item.dose}")
 
     med_phrase = ", ".join(caregiver_meds)

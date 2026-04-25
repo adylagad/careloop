@@ -108,6 +108,32 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("Pantoprazole", result.summary)
         self.assertIn("twice a day before meals", result.summary)
 
+    def test_prescription_document_handles_medicine_list_table_ocr(self):
+        request = PrescriptionDocumentRequest(
+            case_id="case-rx-doc-004",
+            user_id="user-test",
+            document_text=(
+                "Prescription Medicine List\n"
+                "Medication Dosage Frequency Route of Indications Refills\n"
+                "Name Administration\n"
+                "Amoxicillin S0Omg 3timesaday Oral Bacterial infections 2\n"
+                "Metformin 500mg Twiceaday Oral Type 2 diabetes 3\n"
+                "Lisinopril 20 mg Once daily Oral Hypertension 0\n"
+                "Atorvastatin 10mg Once daily Oral Hyperlipidemia 1\n"
+                "Albuterol 90mcg Asneeded Inhalation Asthma or COPD 3\n"
+                "Inhaler exacerbation"
+            ),
+        )
+
+        result = explain_prescription_document(request)
+
+        self.assertEqual(result.status, "completed")
+        self.assertIn("Amoxicillin 500 mg", result.summary)
+        self.assertIn("3 times a day", result.summary)
+        self.assertIn("Metformin 500 mg", result.summary)
+        self.assertIn("twice a day", result.summary)
+        self.assertIn("Albuterol 90 mcg", result.summary)
+
     def test_prescription_document_rejects_binary_garbage(self):
         request = PrescriptionDocumentRequest(
             case_id="case-rx-doc-003",
