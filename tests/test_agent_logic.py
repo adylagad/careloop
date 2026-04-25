@@ -1,6 +1,8 @@
 import sys
 import unittest
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +135,26 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("Metformin 500 mg", result.summary)
         self.assertIn("twice a day", result.summary)
         self.assertIn("Albuterol 90 mcg", result.summary)
+
+    def test_prescription_document_prefers_attachment_over_prompt_text(self):
+        with NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+            handle.write("Rx Lisinopril 20 mg. Sig: Take one tablet by mouth once daily.")
+            path = handle.name
+
+        try:
+            request = PrescriptionDocumentRequest(
+                case_id="case-rx-doc-005",
+                user_id="user-test",
+                document_text="please explain this image",
+                document_path=path,
+            )
+
+            result = explain_prescription_document(request)
+
+            self.assertEqual(result.status, "completed")
+            self.assertIn("Lisinopril 20 mg", result.summary)
+        finally:
+            Path(path).unlink(missing_ok=True)
 
     def test_prescription_document_rejects_binary_garbage(self):
         request = PrescriptionDocumentRequest(

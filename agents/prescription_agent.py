@@ -45,6 +45,11 @@ def intro_response() -> str:
 def prescription_chat_response(ctx: Context, sender: str, text: str) -> str:
     document_request = request_from_chat(make_case_id("chat-rx"), sender, text)
     has_file_input = bool(document_request.document_path or document_request.document_uri)
+    if ctx is not None:
+        ctx.logger.info(
+            f"{AGENT_NAME}: chat request text={bool(document_request.document_text)} "
+            f"path={bool(document_request.document_path)} uri={bool(document_request.document_uri)}"
+        )
 
     if not has_file_input and document_request.document_text:
         if is_greeting(document_request.document_text) or is_help_request(document_request.document_text):

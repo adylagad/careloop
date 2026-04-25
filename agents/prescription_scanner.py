@@ -1,4 +1,5 @@
 import base64
+import binascii
 import re
 import tempfile
 from dataclasses import dataclass
@@ -154,6 +155,14 @@ def _download_to_temp(uri: str, suffix: str) -> Path:
     return Path(handle.name)
 
 
+def _data_uri_to_temp(uri: str) -> Path:
+    header, encoded = uri.split(",", 1)
+    content_type = header.removeprefix("data:").split(";", 1)[0]
+    suffix = _guess_suffix(content_type, ".bin")
+    data = base64.b64decode(encoded)
+    return _bytes_to_temp(data, suffix)
+
+
 def _bytes_to_temp(data: bytes, suffix: str) -> Path:
     handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     handle.write(data)
@@ -189,7 +198,14 @@ def _looks_like_binary(data: bytes) -> bool:
 
 def extract_prescription_text(request: PrescriptionDocumentRequest) -> ExtractedPrescription:
     warnings: list[str] = []
-    if request.document_text and request.document_text.strip():
+    has_document_file = bool(
+        request.document_path or request.document_uri or request.document_base64
+    )
+    if (
+        request.document_text
+        and request.document_text.strip()
+        and (not has_document_file or looks_like_prescription_text(request.document_text))
+    ):
         return ExtractedPrescription(_clean_text(request.document_text), "provided text", warnings)
 
     path: Path | None = None
@@ -199,14 +215,21 @@ def extract_prescription_text(request: PrescriptionDocumentRequest) -> Extracted
         path = Path(request.document_path).expanduser()
         source = str(path)
     elif request.document_uri:
-        uri_path = _path_from_uri(request.document_uri)
-        if uri_path is not None:
-            path = uri_path.expanduser()
-            source = request.document_uri
+        if request.document_uri.startswith("data:"):
+            try:
+                path = _data_uri_to_temp(request.document_uri)
+                source = "data URI document"
+            except (ValueError, binascii.Error) as exc:
+                return ExtractedPrescription("", "data URI document", [f"Could not decode data URI: {exc}"])
         else:
-            suffix = _guess_suffix(request.content_type, Path(urlparse(request.document_uri).path).suffix or ".bin")
-            path = _download_to_temp(request.document_uri, suffix)
-            source = request.document_uri
+            uri_path = _path_from_uri(request.document_uri)
+            if uri_path is not None:
+                path = uri_path.expanduser()
+                source = request.document_uri
+            else:
+                suffix = _guess_suffix(request.content_type, Path(urlparse(request.document_uri).path).suffix or ".bin")
+                path = _download_to_temp(request.document_uri, suffix)
+                source = request.document_uri
     elif request.document_base64:
         suffix = _guess_suffix(request.content_type)
         data = base64.b64decode(request.document_base64)
