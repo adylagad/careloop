@@ -418,10 +418,52 @@ def _is_generic_saved_result_followup(text: str) -> bool:
     return not any(term in normalized for term in new_intent_terms)
 
 
+def _has_explicit_new_intent(text: str) -> bool:
+    normalized = _message_text(text).lower()
+    new_intent_terms = [
+        "tylenol",
+        "acetaminophen",
+        "advil",
+        "ibuprofen",
+        "claritin",
+        "loratadine",
+        "tums",
+        "benadryl",
+        "otc",
+        "over the counter",
+        "medicine",
+        "medication",
+        "pharmacy",
+        "prescription",
+        "rx",
+        "doctor",
+        "clinic",
+        "provider",
+        "mri",
+        "scan",
+        "imaging",
+        "radiology",
+        "caregiver",
+        "caretaker",
+        "care taker",
+        "carer",
+        "daughter",
+        "son",
+        "email",
+        "mail",
+        "message",
+        "reminder",
+        "dose",
+    ]
+    return any(term in normalized for term in new_intent_terms)
+
+
 def _should_answer_saved_followup_before_llm(text: str) -> bool:
     normalized = _message_text(text).lower()
     words = normalized.split()
     if len(words) > 8:
+        return False
+    if _has_explicit_new_intent(text):
         return False
     saved_followup_phrases = [
         "closest",
@@ -1234,6 +1276,7 @@ def _complete_paid_work(pending: PendingOrchestratorPayment, session: Orchestrat
     session.last_appointment_search = None
     _add_timeline(session, "OTC pharmacy search completed after FET payment")
     return (
+        "✅ **Agentverse pharmacy assistant flow completed.**\n\n"
         f"{format_otc_order_preview(order)}\n\n"
         f"{_format_timeline(session)}"
     )

@@ -995,6 +995,72 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("Agentverse pharmacy assistant", response)
         self.assertNotIn("UCLA Imaging", response)
 
+    def test_orchestrator_tylenol_where_question_overrides_saved_appointment(self):
+        sender = "orchestrator-otc-where-after-appointment-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+        session = OrchestratorSession(case_id="careloop-test")
+        ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = session
+        option = AppointmentOption(
+            provider_name="UCLA Health",
+            specialty="primary care",
+            location="100 UCLA Medical Plaza, Los Angeles, CA",
+            phone="310-555-0100",
+            booking_url="https://example.com/ucla",
+            source="test",
+        )
+        session.last_paid_route = "careloop-appointment-assistant"
+        session.last_appointment_search = AppointmentSearchQuote(
+            case_id=session.case_id,
+            specialty="primary care",
+            location="UCLA",
+            options=[option],
+            selected_option=option,
+            data_sources=["test"],
+            status="booking_handoff_ready",
+            payment_quote=PaymentQuote(
+                case_id=session.case_id,
+                service_name="CareLoop Appointment Search",
+                amount="0.1",
+                reference="test-ref",
+            ),
+        )
+
+        response = orchestrator_chat_response(
+            None,
+            sender,
+            "Can you help me find Tylenol. Where do I get it from?",
+        )
+
+        self.assertIn("Agentverse pharmacy assistant", response)
+        self.assertIn("Would you like me to proceed", response)
+        self.assertNotIn("UCLA Health", response)
+
+    def test_orchestrator_completed_otc_result_labels_agentverse_flow(self):
+        sender = "orchestrator-otc-complete-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        orchestrator_chat_response(None, sender, "I need Tylenol near USC")
+        response = orchestrator_chat_response(None, sender, "yes please")
+
+        self.assertIn("over-the-counter medicine", response)
+        session = ORCHESTRATOR_CONTEXT_BY_SENDER[sender]
+        request = CareRequest(case_id=session.case_id, user_id=sender, text="I need Tylenol near USC")
+        quote = build_otc_order_quote(request).payment_quote
+        pending = orchestrator_agent.PendingOrchestratorPayment(
+            original_sender=sender,
+            request=request,
+            route="careloop-pharmacy-assistant",
+            quote=quote,
+            request_fingerprint=orchestrator_agent._request_fingerprint(request, "careloop-pharmacy-assistant"),
+            created_at=0,
+            request_version=orchestrator_agent.PAYMENT_REQUEST_VERSION,
+        )
+
+        completed = orchestrator_agent._complete_paid_work(pending, session)
+
+        self.assertIn("Agentverse pharmacy assistant flow completed", completed)
+        self.assertIn("OTC pharmacy search completed after FET payment", completed)
+
     def test_orchestrator_short_followup_after_paid_otc_uses_saved_order(self):
         sender = "orchestrator-otc-followup-user"
         ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
@@ -1044,6 +1110,7 @@ class AgentLogicTests(unittest.TestCase):
     def test_orchestrator_saved_followup_is_only_for_short_followups(self):
         self.assertTrue(orchestrator_agent._should_answer_saved_followup_before_llm("closest location"))
         self.assertTrue(orchestrator_agent._should_answer_saved_followup_before_llm("can you give me the closest location"))
+        self.assertFalse(orchestrator_agent._should_answer_saved_followup_before_llm("where do I get Tylenol from"))
         self.assertFalse(
             orchestrator_agent._should_answer_saved_followup_before_llm(
                 "can you write an email to my caretaker about my current situation"
