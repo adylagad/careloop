@@ -30,6 +30,7 @@ from domain import (  # noqa: E402
     triage_request,
 )
 from models import CareRequest, PaymentQuote, PrescriptionDocumentRequest  # noqa: E402
+from caregiver_agent import CAREGIVER_CONTEXT_BY_SENDER, caregiver_chat_response  # noqa: E402
 from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  # noqa: E402
 from pharmacy_agent import PAYMENT_REQUEST_VERSION, PendingOrderPayment, _load_pending_by_sender, _pending_payment_message, _pending_requires_refresh, _request_fingerprint, _store_pending, pending_by_sender, pending_orders  # noqa: E402
 from pharmacy_data import _parse_browser_price_text  # noqa: E402
@@ -269,6 +270,23 @@ class AgentLogicTests(unittest.TestCase):
 
         self.assertIn("Subject:", update.summary)
         self.assertIn("Source agent", update.summary)
+
+    def test_caregiver_chat_uses_followup_context(self):
+        sender = "caregiver-followup-user"
+        CAREGIVER_CONTEXT_BY_SENDER.pop(sender, None)
+
+        first = caregiver_chat_response(
+            None,
+            sender,
+            "Write an SMS to my daughter that Dad's allergy medicine checkout is ready.",
+        )
+        second = caregiver_chat_response(None, sender, "make it an email to my son instead")
+
+        self.assertIn(sender, CAREGIVER_CONTEXT_BY_SENDER)
+        self.assertIn("Dad", second)
+        self.assertIn("son", second.lower())
+        self.assertIn("Subject:", second)
+        self.assertNotEqual(first, second)
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))
