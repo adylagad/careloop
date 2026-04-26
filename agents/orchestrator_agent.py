@@ -62,7 +62,7 @@ ORCHESTRATOR_CONTEXT_BY_SENDER: dict[str, "OrchestratorSession"] = {}
 MAX_ORCHESTRATOR_CONTEXTS = 100
 PAYMENT_REQUEST_DEADLINE_SECONDS = 300
 PAYMENT_EXPIRY_SECONDS = PAYMENT_REQUEST_DEADLINE_SECONDS - 15
-PAYMENT_REQUEST_VERSION = "orchestrator-paid-work-v1"
+PAYMENT_REQUEST_VERSION = "orchestrator-paid-work-card-only-v2"
 
 
 @dataclass
@@ -317,6 +317,20 @@ def _format_paid_payment_prompt(route: str, request: CareRequest, quote: Payment
     )
 
 
+def _payment_card_content(route: str, quote: PaymentQuote) -> str:
+    if route == APPOINTMENT_AGENT_NAME:
+        return (
+            "Please complete the FET payment to let CareLoop run the appointment specialist in this chat. "
+            "After payment, CareLoop will search real providers and booking links, then reply here. "
+            "You do not need to paste the query into another agent."
+        )
+    return (
+        "Please complete the FET payment to let CareLoop run the OTC pharmacy specialist in this chat. "
+        "After payment, CareLoop will compare online and pickup options, then reply here. "
+        "You do not need to paste the query into another agent."
+    )
+
+
 async def _send_payment_request(ctx: Context, sender: str, route: str, quote: PaymentQuote) -> None:
     use_testnet = os.getenv("FET_USE_TESTNET", "true").lower() == "true"
     agent_wallet_address = ""
@@ -331,10 +345,7 @@ async def _send_payment_request(ctx: Context, sender: str, route: str, quote: Pa
         "service": service,
         "fet_network": "stable-testnet" if use_testnet else "mainnet",
         "mainnet": "false" if use_testnet else "true",
-        "content": (
-            "Please complete the FET payment to let CareLoop run the live specialist search in this chat. "
-            "After payment, CareLoop will return the result here."
-        ),
+        "content": _payment_card_content(route, quote),
     }
     if agent_wallet_address:
         metadata["provider_agent_wallet"] = agent_wallet_address
@@ -363,7 +374,7 @@ async def _begin_paid_work(
     route: str,
     request: CareRequest,
     session: OrchestratorSession,
-) -> str:
+) -> str | None:
     fingerprint = _request_fingerprint(request, route)
     pending = _load_pending_by_sender(ctx, sender)
     if pending:
@@ -372,13 +383,7 @@ async def _begin_paid_work(
             _remove_pending(ctx, pending)
         else:
             await _send_payment_request(ctx, sender, route, pending.quote)
-            return (
-                "I already created a CareLoop payment request for this search, so I resent the same Pay option.\n\n"
-                f"Amount: {pending.quote.amount} {pending.quote.currency}\n"
-                f"Reference: {pending.quote.reference}\n\n"
-                "After payment, I’ll run the specialist search here. You do not need to paste the query again.\n\n"
-                f"{_format_timeline(session)}"
-            )
+            return None
 
     quote = _build_paid_quote(route, request)
     pending = PendingOrchestratorPayment(
@@ -393,7 +398,7 @@ async def _begin_paid_work(
     _store_pending(ctx, pending)
     session.timeline.append(f"Payment requested for orchestrated {route}")
     await _send_payment_request(ctx, sender, route, quote)
-    return _format_paid_payment_prompt(route, request, quote, session)
+    return None
 
 
 def _local_result(route: str, request: CareRequest) -> CareResult:
@@ -424,7 +429,7 @@ def _complete_paid_work(pending: PendingOrchestratorPayment, session: Orchestrat
     )
 
 
-async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> str:
+async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> str | None:
     session = _session(sender)
     if _is_greeting_or_help(text):
         return _intro_message()
@@ -534,7 +539,7 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
     )
 
 
-def orchestrator_chat_response(ctx: Context, sender: str, text: str) -> str:
+def orchestrator_chat_response(ctx: Context, sender: str, text: str) -> str | None:
     if ctx is None:
         return _orchestrator_answer_preview(sender, text)
     return _orchestrator_answer(ctx, sender, text)

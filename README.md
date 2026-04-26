@@ -38,8 +38,8 @@ layer is included yet.
   appointment, caregiver, and reminder requests to the right specialist handle.
 - `careloop-adherence` — mocked medication reminder and missed-dose escalation plan.
 - `careloop-orchestrator` — ASI:One-facing coordinator. It runs triage, keeps a
-  visible care timeline, handles safe local flows, and sends paid work to the pharmacy
-  or appointment specialist handles so FET cards render in the right chat.
+  visible care timeline, handles safe local flows, shows the FET payment card directly
+  for paid work, and returns the pharmacy or appointment result in the same chat.
 
 For local payment testing, run `payment_buyer_agent.py` as a demo buyer after setting
 `PHARMACY_ASSISTANT_AGENT_ADDRESS` to the pharmacy assistant address. Set

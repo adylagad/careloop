@@ -16,7 +16,7 @@ from uagents_core.contrib.protocols.chat import (
 )
 
 
-ChatResponder = Callable[[Context, str, str], str | Awaitable[str]]
+ChatResponder = Callable[[Context, str, str], str | None | Awaitable[str | None]]
 
 
 def create_text_chat(text: str, end_session: bool = False) -> ChatMessage:
@@ -64,6 +64,8 @@ def create_chat_protocol(agent_label: str, responder: ChatResponder) -> Protocol
         response = responder(ctx, sender, user_text)
         if isawaitable(response):
             response = await response
+        if response is None:
+            return
         await ctx.send(sender, create_text_chat(str(response)))
 
     @chat_proto.on_message(ChatAcknowledgement)
