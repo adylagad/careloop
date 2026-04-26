@@ -89,6 +89,7 @@ class OTCProduct(Model):
     fit_score: int
     reason: str
     safety_note: str
+    price_source: str = "mock catalog"
 
 
 class PharmacyOrderQuote(Model):
@@ -100,5 +101,7 @@ class PharmacyOrderQuote(Model):
     fulfillment_method: str
     address_hint: str
     user_need: str
+    nearby_pharmacies: list[str] | None = None
+    location_source: str | None = None
     status: str
     payment_quote: PaymentQuote

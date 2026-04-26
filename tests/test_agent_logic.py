@@ -102,7 +102,7 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("Other options considered", preview)
         self.assertIn("Checkout handoff", preview)
         self.assertEqual(paid.status, "order_ready_for_checkout")
-        self.assertIn("https://pharmacy.amazon.com", paid.summary)
+        self.assertIn("https://www.costplusdrugs.com", paid.summary)
 
     def test_pharmacy_assistant_separates_prescription_status_intent(self):
         self.assertTrue(is_pharmacy_status_intent("Is my prescription ready at CVS Westwood?"))

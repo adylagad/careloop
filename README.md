@@ -50,10 +50,10 @@ does not expose a normal public consumer API for fully automatic checkout, shipp
 payment, and purchase confirmation, so the real fulfillment handoff is a safe provider
 checkout URL while the agent-owned order/payment behavior is demonstrated through FET.
 
-For real-data expansion, the next adapter layer can use openFDA/RxNorm/DailyMed for
-medication reference data, OpenStreetMap for pharmacy locations, and Cost Plus Drugs or
-GoodRx-style APIs for price/formulary data. Orchestrator-owned prescription readiness
-still needs mocking until a pharmacy/EHR integration is available.
+For real data, the agent uses the Cost Plus Drugs public API for live quoted prices and
+checkout URLs where available, and OpenStreetMap Nominatim/Overpass for nearby pharmacy
+locations. Orchestrator-owned prescription readiness still needs mocking until a
+pharmacy/EHR integration is available.
 
 Example ASI:One prompts:
 

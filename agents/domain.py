@@ -11,6 +11,7 @@ from models import (
     PharmacyRecommendation,
     PrescriptionDocumentRequest,
 )
+from pharmacy_data import enrich_product_with_costplus, nearby_pharmacies
 from prescription_scanner import (
     ExtractedPrescription,
     extract_prescription_text,
@@ -205,67 +206,63 @@ def is_pharmacy_status_intent(text: str) -> bool:
     )
 
 
-def _amazon_pharmacy_url(asin: str) -> str:
-    return f"https://pharmacy.amazon.com/dp/{asin}"
-
-
 def _mock_otc_catalog() -> list[OTCProduct]:
     return [
         OTCProduct(
-            name="Tylenol Extra Strength",
-            category="pain_or_fever",
-            active_ingredient="Acetaminophen",
-            strength="500 mg",
-            package_size="100 tablets",
-            unit_price_usd="$8.99",
-            availability="Available through Amazon Pharmacy checkout",
-            provider="Amazon Pharmacy",
-            checkout_url=_amazon_pharmacy_url("B08429LBJH"),
-            fit_score=94,
-            reason="Good first-line OTC option for many adults with pain or fever when NSAIDs are a concern.",
-            safety_note="Do not exceed the label maximum. Avoid combining with other acetaminophen-containing products.",
-        ),
-        OTCProduct(
-            name="Advil",
+            name="Ibuprofen",
             category="pain_or_inflammation",
             active_ingredient="Ibuprofen",
             strength="200 mg",
-            package_size="100 tablets",
-            unit_price_usd="$9.49",
-            availability="Available through Amazon Pharmacy checkout",
-            provider="Amazon Pharmacy",
-            checkout_url=_amazon_pharmacy_url("B08429R6T7"),
-            fit_score=88,
+            package_size="30 tablets",
+            unit_price_usd="real price pending",
+            availability="Real quote pending",
+            provider="Cost Plus Drugs",
+            checkout_url="https://www.costplusdrugs.com/medications/ibuprofen-200mg-tablet/",
+            fit_score=92,
             reason="Useful for pain with inflammation, if the user can safely take NSAIDs.",
             safety_note="Ask a clinician before use if the patient has stomach bleeding risk, kidney disease, or takes blood thinners.",
         ),
         OTCProduct(
-            name="Basic Care Loratadine",
+            name="Loratadine",
             category="allergy",
             active_ingredient="Loratadine",
             strength="10 mg",
-            package_size="300 tablets",
-            unit_price_usd="$13.99",
-            availability="Available through Amazon Pharmacy checkout",
-            provider="Amazon Pharmacy",
-            checkout_url=_amazon_pharmacy_url("B09N2SHGBT"),
+            package_size="30 tablets",
+            unit_price_usd="real price pending",
+            availability="Real quote pending",
+            provider="Cost Plus Drugs",
+            checkout_url="https://www.costplusdrugs.com/medications/Loratadine-10mg-Tablet/",
             fit_score=92,
             reason="Non-drowsy once-daily allergy option for sneezing, runny nose, or itchy eyes.",
             safety_note="Use only as directed on the label. Ask a pharmacist before combining with other allergy medicines.",
         ),
         OTCProduct(
-            name="Tums Antacid",
+            name="Famotidine",
             category="heartburn",
-            active_ingredient="Calcium carbonate",
-            strength="assorted strengths",
-            package_size="search result",
-            unit_price_usd="$6.99",
-            availability="Amazon checkout search handoff",
-            provider="Amazon",
-            checkout_url="https://www.amazon.com/s?k=Tums+antacid+tablets",
-            fit_score=86,
-            reason="Fast OTC antacid option for occasional heartburn or indigestion.",
-            safety_note="Ask a pharmacist before use if the patient has kidney disease or takes medicines that interact with calcium.",
+            active_ingredient="Famotidine",
+            strength="20 mg",
+            package_size="30 tablets",
+            unit_price_usd="real price pending",
+            availability="Real quote pending",
+            provider="Cost Plus Drugs",
+            checkout_url="https://www.costplusdrugs.com/medications/Famotidine-20mg-Tablet/",
+            fit_score=90,
+            reason="Common OTC option for heartburn or acid indigestion.",
+            safety_note="Ask a pharmacist before use if symptoms are severe, frequent, or the patient has kidney disease.",
+        ),
+        OTCProduct(
+            name="Aspirin Low Dose",
+            category="pain_or_fever",
+            active_ingredient="Aspirin",
+            strength="81 mg",
+            package_size="30 chewable tablets",
+            unit_price_usd="real price pending",
+            availability="Real quote pending",
+            provider="Cost Plus Drugs",
+            checkout_url="https://www.costplusdrugs.com/medications/aspirin-81mg-tablet-chewable-aspirin/",
+            fit_score=62,
+            reason="Available with real quote data, but not the default pain choice for older adults due bleeding risk.",
+            safety_note="Ask a clinician before aspirin use, especially with blood thinners, ulcers, kidney disease, or upcoming procedures.",
         ),
     ]
 
@@ -313,12 +310,13 @@ def _usd_to_float(value: str) -> float:
 
 
 def build_otc_order_quote(request: CareRequest) -> PharmacyOrderQuote:
-    ranked = _rank_otc_products(request.text)
+    ranked = [enrich_product_with_costplus(product) for product in _rank_otc_products(request.text)]
     product = ranked[0]
     quantity = _quantity_from_text(request.text)
-    subtotal = _usd_to_float(product.unit_price_usd) * quantity
+    subtotal = _usd_to_float(product.unit_price_usd) * quantity if product.unit_price_usd.startswith("$") else 0
     address_hint = value_from_context(request, "address", value_from_context(request, "location", "Los Angeles, CA"))
     preference = value_from_context(request, "preference", "delivery")
+    locations = nearby_pharmacies(address_hint)
     reference = f"careloop-otc-order-{request.case_id}-{uuid4().hex[:8]}"
     quote = PaymentQuote(
         case_id=request.case_id,
@@ -332,10 +330,12 @@ def build_otc_order_quote(request: CareRequest) -> PharmacyOrderQuote:
         product=product,
         alternatives=ranked[1:3],
         quantity=quantity,
-        subtotal_usd=f"${subtotal:.2f}",
-        fulfillment_method="Amazon checkout handoff" if preference == "delivery" else "Amazon/nearby checkout handoff",
+        subtotal_usd=f"${subtotal:.2f}" if subtotal else "real price unavailable",
+        fulfillment_method="Cost Plus checkout handoff",
         address_hint=address_hint,
         user_need=_infer_otc_need(request.text),
+        nearby_pharmacies=locations,
+        location_source="OpenStreetMap Overpass API" if locations else "location lookup unavailable",
         status="quote_ready",
         payment_quote=quote,
     )
@@ -354,22 +354,28 @@ def _infer_otc_need(text: str) -> str:
 
 def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
     alternatives = "\n".join(
-        f"- {item.name}: {item.reason} ({item.unit_price_usd})"
+        f"- {item.name}: {item.reason} ({item.unit_price_usd}; {item.price_source})"
         for item in order.alternatives
     )
+    locations = "\n".join(f"- {item}" for item in (order.nearby_pharmacies or []))
+    if not locations:
+        locations = "- I could not fetch nearby pharmacy locations right now."
     return (
         "CareLoop Pharmacy Assistant\n\n"
         f"Need: {order.user_need}\n"
-        f"Address area: {order.address_hint}\n\n"
+        f"Address area: {order.address_hint}\n"
+        f"Location source: {order.location_source}\n\n"
         "Recommended OTC option:\n"
         f"- Item: {order.product.name} ({order.product.active_ingredient} {order.product.strength})\n"
         f"- Package: {order.product.package_size}\n"
         f"- Quantity: {order.quantity}\n"
-        f"- Estimated product subtotal: {order.subtotal_usd}\n"
+        f"- Real quoted subtotal: {order.subtotal_usd}\n"
+        f"- Price source: {order.product.price_source}\n"
         f"- Provider: {order.product.provider}\n"
         f"- Availability: {order.product.availability}\n\n"
         f"Why this option: {order.product.reason}\n\n"
         f"Other options considered:\n{alternatives}\n\n"
+        f"Nearby pharmacies from OpenStreetMap:\n{locations}\n\n"
         f"Checkout handoff: {order.product.checkout_url}\n\n"
         f"CareLoop service fee: {order.payment_quote.amount} FET via {order.payment_quote.payment_method}\n"
         f"Payment reference: {order.payment_quote.reference}\n\n"
@@ -386,7 +392,7 @@ def otc_order_paid_result(request: CareRequest, order: PharmacyOrderQuote) -> Ca
         status="order_ready_for_checkout",
         summary=(
             f"OTC order record created for {order.quantity} x {order.product.name}. "
-            f"Estimated product subtotal is {order.subtotal_usd}. Complete fulfillment here: "
+            f"Real quoted subtotal is {order.subtotal_usd} from {order.product.price_source}. Complete fulfillment here: "
             f"{order.product.checkout_url}"
         ),
         next_actions=[
