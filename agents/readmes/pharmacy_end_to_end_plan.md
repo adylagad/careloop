@@ -1,5 +1,12 @@
 # CareLoop Pharmacy End-to-End Plan
 
+> Status: implemented in `agents/orchestrator_agent.py`. The orchestrator now
+> offers the Agentverse pharmacy assistant first, waits for user confirmation,
+> and only then runs the FET payment + live OTC search. The pharmacy assistant
+> remains independently usable from ASI:One. See
+> `tests/test_agent_logic.py::test_orchestrator_otc_request_offers_pharmacy_before_payment`
+> and the surrounding tests for the wired-up behavior.
+
 ## Goal
 
 Add the same clean demo pattern used by the doctor-office flow:

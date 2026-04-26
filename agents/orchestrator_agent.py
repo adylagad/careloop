@@ -97,6 +97,7 @@ class OrchestratorSession:
     last_caregiver_subject: str | None = None
     last_caregiver_body: str | None = None
     pending_doctor_booking_text: str | None = None
+    pending_pharmacy_request_text: str | None = None
     completed_payment_references: set[str] = field(default_factory=set)
     timeline: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time)
@@ -323,6 +324,26 @@ def _is_doctor_offer_confirmation(session: OrchestratorSession, text: str) -> bo
         "schedule it",
         "confirm",
         "do it",
+    ]
+    return any(term == normalized or term in normalized for term in confirmation_terms)
+
+
+def _is_pharmacy_offer_confirmation(session: OrchestratorSession, text: str) -> bool:
+    if not session.pending_pharmacy_request_text:
+        return False
+    normalized = _message_text(text).lower()
+    confirmation_terms = [
+        "yes",
+        "yes please",
+        "please proceed",
+        "proceed",
+        "go ahead",
+        "do it",
+        "order it",
+        "compare prices",
+        "compare",
+        "confirm",
+        "start",
     ]
     return any(term == normalized or term in normalized for term in confirmation_terms)
 
@@ -995,6 +1016,7 @@ def _format_direct_booking_result(session: OrchestratorSession, result: CareResu
 
 def _doctor_office_offer(session: OrchestratorSession, route_text: str) -> str:
     session.pending_doctor_booking_text = route_text
+    session.pending_pharmacy_request_text = None
     session.last_route = DOCTOR_OFFICE_AGENT_NAME
     session.last_text = route_text
     _add_timeline(session, "Agentverse doctor booking option offered")
@@ -1002,6 +1024,44 @@ def _doctor_office_offer(session: OrchestratorSession, route_text: str) -> str:
         "I found an Agentverse doctor who can book this end to end.\n\n"
         "CareLoop Doctor Office: Dr. Maya Patel at CareLoop Family Clinic near USC Village.\n\n"
         "This can create the appointment and send the Google Calendar invite. Would you like me to proceed?"
+    )
+
+
+def _pharmacy_offer(session: OrchestratorSession, route_text: str) -> str:
+    session.pending_pharmacy_request_text = route_text
+    session.pending_doctor_booking_text = None
+    session.last_route = PHARMACY_ASSISTANT_AGENT_NAME
+    session.last_text = route_text
+    _add_timeline(session, "Agentverse pharmacy assistant offered")
+    return (
+        "I found an Agentverse pharmacy assistant that can handle this.\n\n"
+        "CareLoop Pharmacy Assistant compares OTC prices, shows pickup or delivery options, "
+        "and prepares checkout after a small FET service fee.\n\n"
+        "Would you like me to proceed?"
+    )
+
+
+async def _begin_pharmacy_paid_work(
+    ctx: Context,
+    sender: str,
+    session: OrchestratorSession,
+) -> str | None:
+    pending_text = session.pending_pharmacy_request_text or session.last_text
+    session.pending_pharmacy_request_text = None
+    request = CareRequest(case_id=session.case_id, user_id=sender, text=pending_text)
+    return await _begin_paid_work(ctx, sender, PHARMACY_ASSISTANT_AGENT_NAME, request, session)
+
+
+def _begin_pharmacy_paid_work_preview(sender: str, session: OrchestratorSession) -> str:
+    pending_text = session.pending_pharmacy_request_text or session.last_text
+    session.pending_pharmacy_request_text = None
+    session.last_route = PHARMACY_ASSISTANT_AGENT_NAME
+    session.last_text = pending_text
+    return _paid_handoff(
+        PHARMACY_ASSISTANT_AGENT_NAME,
+        pending_text,
+        session,
+        "user confirmed pharmacy offer",
     )
 
 
@@ -1063,13 +1123,20 @@ async def _route_decision(
     route = decision["route"]
     session.last_route = route
     session.last_text = route_text
+    if route != DOCTOR_OFFICE_AGENT_NAME:
+        session.pending_doctor_booking_text = None
+    if route != PHARMACY_ASSISTANT_AGENT_NAME:
+        session.pending_pharmacy_request_text = None
     _add_timeline(session, f"Triage route: {route} ({decision['confidence']})")
 
     request = CareRequest(case_id=session.case_id, user_id=sender, text=route_text)
     if route == DOCTOR_OFFICE_AGENT_NAME:
         return _doctor_office_offer(session, route_text)
 
-    if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
+    if route == PHARMACY_ASSISTANT_AGENT_NAME:
+        return _pharmacy_offer(session, route_text)
+
+    if route == APPOINTMENT_AGENT_NAME:
         return await _begin_paid_work(ctx, sender, route, request, session)
 
     return _complete_local_route(session, route, request)
@@ -1084,13 +1151,20 @@ def _route_decision_preview(
     route = decision["route"]
     session.last_route = route
     session.last_text = route_text
+    if route != DOCTOR_OFFICE_AGENT_NAME:
+        session.pending_doctor_booking_text = None
+    if route != PHARMACY_ASSISTANT_AGENT_NAME:
+        session.pending_pharmacy_request_text = None
     _add_timeline(session, f"Triage route: {route} ({decision['confidence']})")
 
     request = CareRequest(case_id=session.case_id, user_id=sender, text=route_text)
     if route == DOCTOR_OFFICE_AGENT_NAME:
         return _doctor_office_offer(session, route_text)
 
-    if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
+    if route == PHARMACY_ASSISTANT_AGENT_NAME:
+        return _pharmacy_offer(session, route_text)
+
+    if route == APPOINTMENT_AGENT_NAME:
         return _paid_handoff(route, route_text, session, decision["rationale"])
 
     return _complete_local_route(session, route, request)
@@ -1143,6 +1217,8 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         return _send_saved_caregiver_email(session)
     if _is_doctor_offer_confirmation(session, text):
         return await _book_doctor_office(ctx, sender, session, session.pending_doctor_booking_text)
+    if _is_pharmacy_offer_confirmation(session, text):
+        return await _begin_pharmacy_paid_work(ctx, sender, session)
     if _is_caregiver_message_request(text):
         request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
         result = notify_caregiver(request)
@@ -1190,6 +1266,8 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
         return _send_saved_caregiver_email(session)
     if _is_doctor_offer_confirmation(session, text):
         return _book_doctor_office_preview(sender, session, session.pending_doctor_booking_text)
+    if _is_pharmacy_offer_confirmation(session, text):
+        return _begin_pharmacy_paid_work_preview(sender, session)
     if _is_caregiver_message_request(text):
         request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
         result = notify_caregiver(request)

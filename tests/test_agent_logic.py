@@ -790,10 +790,13 @@ class AgentLogicTests(unittest.TestCase):
             sender,
             "can you help me find tylenol. where do i get it from",
         )
+        confirmed = orchestrator_chat_response(None, sender, "yes please")
 
-        self.assertIn("over-the-counter medicine", response)
-        self.assertIn("0.1 FET", response)
+        self.assertIn("Agentverse pharmacy assistant", response)
+        self.assertNotIn("0.1 FET", response)
         self.assertNotIn("UCLA Health", response)
+        self.assertIn("over-the-counter medicine", confirmed)
+        self.assertIn("0.1 FET", confirmed)
 
     def test_orchestrator_can_use_asi_one_for_intent_classification(self):
         session = OrchestratorSession(case_id="careloop-test")
@@ -829,6 +832,117 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("Appointment booked", result.summary)
         self.assertIn("Dr. Maya Patel", result.summary)
         self.assertIn("mock_confirmed_calendar_not_configured", result.summary)
+
+    def test_orchestrator_otc_request_offers_pharmacy_before_payment(self):
+        sender = "orchestrator-pharmacy-offer-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        response = orchestrator_chat_response(None, sender, "I need Tylenol near USC. Can you help?")
+
+        self.assertIn("Agentverse pharmacy assistant", response)
+        self.assertIn("Would you like me to proceed", response)
+        self.assertNotIn("0.1 FET", response)
+        self.assertEqual(
+            ORCHESTRATOR_CONTEXT_BY_SENDER[sender].pending_pharmacy_request_text,
+            "I need Tylenol near USC. Can you help?",
+        )
+
+    def test_orchestrator_pharmacy_yes_confirms_to_payment_prompt(self):
+        sender = "orchestrator-pharmacy-confirm-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        offer = orchestrator_chat_response(None, sender, "I need Tylenol near USC. Can you help?")
+        confirmed = orchestrator_chat_response(None, sender, "yes please")
+
+        self.assertIn("Agentverse pharmacy assistant", offer)
+        self.assertIn("over-the-counter medicine", confirmed)
+        self.assertIn("0.1 FET CareLoop service fee", confirmed)
+        self.assertIsNone(ORCHESTRATOR_CONTEXT_BY_SENDER[sender].pending_pharmacy_request_text)
+
+    def test_orchestrator_mri_skips_pharmacy_offer(self):
+        sender = "orchestrator-mri-skip-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        response = orchestrator_chat_response(None, sender, "Find an MRI scan near USC Village")
+
+        self.assertIn("nearby appointment and imaging options", response)
+        self.assertIn("0.1 FET", response)
+        self.assertNotIn("Agentverse pharmacy assistant", response)
+
+    def test_orchestrator_prescription_status_skips_pharmacy_offer(self):
+        sender = "orchestrator-prescription-status-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        response = orchestrator_chat_response(None, sender, "Is my prescription ready at CVS?")
+
+        self.assertNotIn("Agentverse pharmacy assistant", response)
+        self.assertNotIn("0.1 FET", response)
+
+    def test_orchestrator_new_otc_request_overrides_saved_appointment_with_offer(self):
+        sender = "orchestrator-otc-after-mri-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+        session = OrchestratorSession(case_id="careloop-test")
+        ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = session
+        option = AppointmentOption(
+            provider_name="UCLA Imaging",
+            specialty="imaging center",
+            location="100 UCLA Medical Plaza, Los Angeles, CA",
+            phone="310-555-0100",
+            booking_url="https://example.com/ucla",
+            source="test",
+        )
+        session.last_paid_route = "careloop-appointment-assistant"
+        session.last_appointment_search = AppointmentSearchQuote(
+            case_id=session.case_id,
+            specialty="imaging center",
+            location="UCLA",
+            options=[option],
+            selected_option=option,
+            data_sources=["test"],
+            status="booking_handoff_ready",
+            payment_quote=PaymentQuote(
+                case_id=session.case_id,
+                service_name="CareLoop Appointment Search",
+                amount="0.1",
+                reference="test-ref",
+            ),
+        )
+
+        response = orchestrator_chat_response(None, sender, "I need Tylenol near USC")
+
+        self.assertIn("Agentverse pharmacy assistant", response)
+        self.assertNotIn("UCLA Imaging", response)
+
+    def test_orchestrator_short_followup_after_paid_otc_uses_saved_order(self):
+        sender = "orchestrator-otc-followup-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+        session = OrchestratorSession(case_id="careloop-test")
+        ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = session
+        request = self.make_request(
+            "Find allergy medicine near USC",
+            {"location": "USC, Los Angeles, CA", "preference": "delivery"},
+        )
+        order = build_otc_order_quote(request)
+        session.last_paid_route = "careloop-pharmacy-assistant"
+        session.last_otc_order = order
+
+        response = orchestrator_chat_response(None, sender, "closest pickup")
+
+        self.assertIn("closest pickup location", response.lower())
+        self.assertNotIn("Agentverse pharmacy assistant", response)
+
+    def test_orchestrator_repeated_pharmacy_confirmation_does_not_duplicate(self):
+        sender = "orchestrator-pharmacy-repeat-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        orchestrator_chat_response(None, sender, "I need Tylenol near USC")
+        first_confirm = orchestrator_chat_response(None, sender, "yes please")
+        orchestrator_chat_response(None, sender, "I need Tylenol near USC")
+        second_confirm = orchestrator_chat_response(None, sender, "yes please")
+
+        self.assertIn("0.1 FET CareLoop service fee", first_confirm)
+        self.assertIn("0.1 FET CareLoop service fee", second_confirm)
+        self.assertIsNone(ORCHESTRATOR_CONTEXT_BY_SENDER[sender].pending_pharmacy_request_text)
 
     def test_orchestrator_routes_cough_booking_to_doctor_office(self):
         sender = "orchestrator-doctor-office-user"
