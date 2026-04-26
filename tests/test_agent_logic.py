@@ -835,11 +835,14 @@ class AgentLogicTests(unittest.TestCase):
 
         with patch.object(orchestrator_agent, "DOCTOR_OFFICE_AGENT_ADDRESS", ""):
             response = orchestrator_chat_response(None, sender, "I have cough and fever. book me a doctor tomorrow morning")
+            booked = orchestrator_chat_response(None, sender, "yes please")
 
-        self.assertIn("Appointment booked", response)
-        self.assertIn("Dr. Maya Patel", response)
-        self.assertIn("CareLoop Family Clinic", response)
+        self.assertIn("Agentverse doctor", response)
         self.assertNotIn("0.1 FET", response)
+        self.assertIn("Appointment booked", booked)
+        self.assertIn("Dr. Maya Patel", booked)
+        self.assertIn("CareLoop Family Clinic", booked)
+        self.assertIn("near USC Village", booked)
 
     def test_orchestrator_saved_followup_is_only_for_short_followups(self):
         self.assertTrue(orchestrator_agent._should_answer_saved_followup_before_llm("closest location"))

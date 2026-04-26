@@ -155,15 +155,16 @@ My dad has chest pain and cannot breathe.
 `careloop-orchestrator` is the demo-facing CareLoop coordinator. It is stateful, starts
 with triage, keeps a demo timeline, and starts paid appointment/pharmacy searches with a
 patient-facing FET service-fee step.
-For a simple cough/fever primary-care booking, it can route internally to
-`careloop-doctor-office` and return a real Google Calendar booking confirmation in the
-same ASI:One chat.
+For a simple cough/fever primary-care booking near USC, it first offers the
+Agentverse-based `careloop-doctor-office` end-to-end booking path, then creates the
+Google Calendar appointment only after the user confirms.
 
 Example ASI:One prompts:
 
 ```text
 Find an MRI scan near USC Village.
 I have cough and fever. Book me a doctor tomorrow morning.
+yes please
 Write a text to my daughter that Dad's appointment is booked tomorrow.
 timeline
 ```

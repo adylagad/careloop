@@ -1,7 +1,7 @@
 # CareLoop Doctor Office
 
-CareLoop Doctor Office is a demo bookable clinic agent for cough, fever, cold,
-sore throat, and primary-care appointment requests.
+CareLoop Doctor Office is a demo bookable clinic agent near USC Village for cough,
+fever, cold, sore throat, and primary-care appointment requests.
 
 ## What It Does
 

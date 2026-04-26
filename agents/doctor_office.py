@@ -15,7 +15,7 @@ AGENT_NAME = "careloop-doctor-office"
 TIMEZONE = "America/Los_Angeles"
 DOCTOR_NAME = "Dr. Maya Patel"
 CLINIC_NAME = "CareLoop Family Clinic"
-CLINIC_LOCATION = "Virtual visit / CareLoop Family Clinic, Los Angeles, CA"
+CLINIC_LOCATION = "CareLoop Family Clinic, near USC Village, Los Angeles, CA"
 
 
 def _normalized(text: str) -> str:
