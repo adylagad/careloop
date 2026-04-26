@@ -19,6 +19,7 @@ from chat_protocol import create_chat_protocol
 from chat_protocol import create_text_chat
 from config import create_careloop_agent, env_int
 from domain import (
+    OTC_ORDER_SERVICE_FEE_FET,
     build_otc_order_quote,
     build_otc_service_payment_quote,
     format_otc_payment_prompt,
@@ -234,11 +235,20 @@ def _load_paid_order(ctx: Context | None, sender: str) -> tuple[str | None, Phar
 
 def _pending_payment_message(pending: PendingOrderPayment) -> str:
     return (
-        "I already created a payment request for this OTC search.\n\n"
+        "I already created a payment request for this OTC search, so I resent the same Pay option.\n\n"
         f"Amount: {pending.quote.amount} {pending.quote.currency}\n"
         f"Reference: {pending.quote.reference}\n\n"
         "Please click the Pay option in this chat. After the payment is confirmed, "
         "I’ll run the live price comparison and send the result here. I won’t create a second payment request."
+    )
+
+
+def _pending_requires_refresh(pending: PendingOrderPayment, request_fingerprint: str) -> bool:
+    return (
+        pending.request_fingerprint != request_fingerprint
+        or pending.quote.amount != OTC_ORDER_SERVICE_FEE_FET
+        or pending.quote.currency != "FET"
+        or pending.quote.payment_method != "fet_direct"
     )
 
 
@@ -408,7 +418,14 @@ async def pharmacy_chat_handler(ctx: Context, sender: str, text: str) -> str:
 
     pending_payment = _load_pending_by_sender(ctx, sender)
     if pending_payment:
-        return _pending_payment_message(pending_payment)
+        if _pending_requires_refresh(pending_payment, request_fingerprint):
+            ctx.logger.info(
+                f"{AGENT_NAME}: refreshing stale pending payment {pending_payment.quote.reference} for {sender}"
+            )
+            _remove_pending(ctx, pending_payment)
+        else:
+            await _send_otc_payment_request(ctx, sender, pending_payment.quote)
+            return _pending_payment_message(pending_payment)
 
     quote = build_otc_service_payment_quote(request)
     pending = PendingOrderPayment(
