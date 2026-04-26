@@ -22,17 +22,17 @@ from domain import (
 from models import CareRequest, CareResult, PharmacyFulfillmentStatus
 
 
-AGENT_NAME = "careloop-pharmacy-options"
+AGENT_NAME = "careloop-prescription-status"
 PORT = env_int("PHARMACY_AGENT_PORT", 8011)
 
 agent = create_careloop_agent(
     name=AGENT_NAME,
     port=PORT,
-    seed_env="PHARMACY_AGENT_SEED",
+    seed_env="PRESCRIPTION_STATUS_AGENT_SEED",
     default_seed="careloop pharmacy options seed phrase change me",
     description=(
-        "CareLoop Pharmacy Fulfillment checks whether a doctor-sent prescription "
-        "is received, delayed, ready, or needs action, with paid FET monitoring."
+        "CareLoop Prescription Status checks whether the patient's doctor-sent "
+        "prescription is received, delayed, ready, or needs action, with paid FET monitoring."
     ),
 )
 
@@ -58,9 +58,9 @@ def pharmacy_chat_response(ctx: Context, sender: str, text: str) -> str:
     normalized = " ".join(text.lower().split())
     if normalized in {"hi", "hello", "hey", "help", "what can you do"}:
         return (
-            "Hi, I’m CareLoop’s pharmacy fulfillment helper. Ask me if a doctor-sent "
-            "prescription is ready for pickup or delivery.\n\n"
-            "Example: `My doctor sent Metformin 500 mg to CVS Westwood. Is it ready for pickup?`"
+            "Hi, I’m CareLoop’s prescription status helper. Ask me if your pharmacy has "
+            "your prescription ready. You don’t need to know the medication name yet.\n\n"
+            "Example: `Is my prescription ready at CVS Westwood?`"
         )
 
     request = CareRequest(
@@ -152,7 +152,7 @@ async def handle_care_result(ctx: Context, sender: str, msg: CareResult):
 @agent.on_event("startup")
 async def startup(ctx: Context):
     ctx.logger.info(f"{AGENT_NAME} address: {ctx.agent.address}")
-    ctx.logger.info("OmegaClaw skill target: CareLoop Pharmacy Fulfillment")
+    ctx.logger.info("OmegaClaw skill target: CareLoop Prescription Status")
 
 
 @agent.on_interval(period=30.0)

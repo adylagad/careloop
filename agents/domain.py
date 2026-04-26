@@ -18,6 +18,7 @@ from prescription_scanner import (
 
 PHARMACY_SERVICE_FEE_FET = "0.05"
 PHARMACY_MONITOR_CHECK_MINUTES = 15
+PRESCRIPTION_STATUS_AGENT_NAME = "careloop-prescription-status"
 
 
 def make_case_id(prefix: str = "case") -> str:
@@ -54,6 +55,29 @@ def infer_medication(text: str) -> tuple[str, str]:
     )
 
     dosage = "20 mg"
+    for token in normalized.replace(",", " ").split():
+        if token.endswith("mg") and token[:-2].replace(".", "", 1).isdigit():
+            dosage = token[:-2] + " mg"
+        elif token.isdigit():
+            dosage = token + " mg"
+    return medication, dosage
+
+
+def infer_medication_if_present(text: str) -> tuple[str, str] | None:
+    normalized = normalize_text(text)
+    medication_map = {
+        "atorvastatin": "Atorvastatin",
+        "lipitor": "Atorvastatin",
+        "metformin": "Metformin",
+        "lisinopril": "Lisinopril",
+        "amlodipine": "Amlodipine",
+        "levothyroxine": "Levothyroxine",
+    }
+    medication = next((display for key, display in medication_map.items() if key in normalized), None)
+    if medication is None:
+        return None
+
+    dosage = "dose pending pharmacy confirmation"
     for token in normalized.replace(",", " ").split():
         if token.endswith("mg") and token[:-2].replace(".", "", 1).isdigit():
             dosage = token[:-2] + " mg"
@@ -130,6 +154,27 @@ def _infer_pharmacy_name(text: str) -> str:
     )
 
 
+def _mock_pending_prescription(request: CareRequest) -> tuple[str, str]:
+    if request.context:
+        medication = request.context.get("medication")
+        dosage = request.context.get("dosage")
+        if medication:
+            return str(medication), str(dosage or "dose pending pharmacy confirmation")
+
+    explicit = infer_medication_if_present(request.text)
+    if explicit is not None:
+        return explicit
+
+    normalized = normalize_text(request.text)
+    if "mom" in normalized or "mother" in normalized:
+        return "Lisinopril", "10 mg"
+    if "dad" in normalized or "father" in normalized:
+        return "Atorvastatin", "20 mg"
+    if "delivery" in normalized or "deliver" in normalized:
+        return "Atorvastatin", "20 mg"
+    return "Metformin", "500 mg"
+
+
 def _status_for_request(text: str, medication: str, preference: str, monitor_tick: int = 0) -> tuple[str, str, str | None]:
     normalized = normalize_text(text)
     med_key = medication.lower()
@@ -187,7 +232,7 @@ def build_pharmacy_fulfillment_status(
     *,
     monitor_tick: int = 0,
 ) -> PharmacyFulfillmentStatus:
-    medication, dosage = infer_medication(request.text)
+    medication, dosage = _mock_pending_prescription(request)
     location = value_from_context(request, "location", "Los Angeles, CA")
     preference = value_from_context(request, "preference", "pickup")
     pharmacy_name = value_from_context(request, "pharmacy_name", _infer_pharmacy_name(request.text))
@@ -196,7 +241,7 @@ def build_pharmacy_fulfillment_status(
     reference = f"careloop-pharmacy-monitor-{request.case_id}-{uuid4().hex[:8]}"
     quote = PaymentQuote(
         case_id=request.case_id,
-        service_name="CareLoop Pharmacy Fulfillment Monitor",
+        service_name="CareLoop Prescription Status Monitor",
         amount=PHARMACY_SERVICE_FEE_FET,
         reference=reference,
     )
@@ -223,9 +268,9 @@ def build_pharmacy_fulfillment_status(
 def format_pharmacy_fulfillment_preview(status: PharmacyFulfillmentStatus) -> str:
     ready_text = "Yes" if status.status.startswith("ready") else "Not yet"
     lines = [
-        "CareLoop Pharmacy Fulfillment",
+        "CareLoop Prescription Status",
         "",
-        f"Medication: {status.medication} {status.dosage}",
+        f"Prescription found: {status.medication} {status.dosage}",
         f"Pharmacy: {status.pharmacy_name}",
         f"Location: {status.location}",
         f"Preference: {status.preference}",
@@ -247,7 +292,7 @@ def format_pharmacy_fulfillment_preview(status: PharmacyFulfillmentStatus) -> st
             "",
             f"Active monitoring fee: {status.payment_quote.amount} FET via {status.payment_quote.payment_method}",
             f"Payment reference: {status.payment_quote.reference}",
-            "Paid monitoring keeps checking automatically and sends an update when the pharmacy status changes.",
+            "Paid monitoring keeps checking automatically and informs you when the prescription is ready or needs action.",
         ]
     )
     return "\n".join(lines)
@@ -273,7 +318,7 @@ def pharmacy_monitoring_result(
 
     return CareResult(
         case_id=request.case_id,
-        agent_name="careloop-pharmacy-options",
+        agent_name=PRESCRIPTION_STATUS_AGENT_NAME,
         status="completed" if status.status.startswith("ready") else "monitoring",
         summary=summary,
         next_actions=[
@@ -295,7 +340,7 @@ def pharmacy_status_update_result(
 ) -> CareResult:
     return CareResult(
         case_id=request.case_id,
-        agent_name="careloop-pharmacy-options",
+        agent_name=PRESCRIPTION_STATUS_AGENT_NAME,
         status=status.status,
         summary=(
             f"Pharmacy update: {status.medication} {status.dosage} at {status.pharmacy_name} is "
@@ -340,11 +385,11 @@ def pharmacy_paid_result(
 def pharmacy_unpaid_result(request: CareRequest, reason: str) -> CareResult:
     return CareResult(
         case_id=request.case_id,
-        agent_name="careloop-pharmacy-options",
+        agent_name=PRESCRIPTION_STATUS_AGENT_NAME,
         status="payment_required",
         summary=(
             "Pharmacy status can be checked once, but active automatic monitoring "
-            f"is held until the CareLoop Pharmacy Fulfillment fee is paid. Reason: {reason}"
+            f"is held until the CareLoop Prescription Status fee is paid. Reason: {reason}"
         ),
         next_actions=[
             "Approve the 0.05 FET service fee to monitor until the prescription is ready.",
@@ -578,7 +623,7 @@ def orchestrate_care(request: CareRequest) -> CareResult:
         status="completed",
         summary=summary,
         next_actions=[
-            "Invoke careloop-pharmacy-options for paid prescription fulfillment monitoring.",
+            "Invoke careloop-prescription-status for paid prescription status monitoring.",
             "Show timeline in the demo flow.",
             "Use ASI:One to ask the orchestrator for the full care journey.",
         ],

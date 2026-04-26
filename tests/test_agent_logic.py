@@ -34,11 +34,13 @@ class AgentLogicTests(unittest.TestCase):
 
     def test_pharmacy_fulfillment_status_has_fet_quote(self):
         request = self.make_request(
-            "My doctor sent atorvastatin 20mg to CVS Westwood. Is it ready for delivery?",
+            "Is my prescription ready at CVS Westwood for delivery?",
             {
                 "location": "Los Angeles, CA",
                 "preference": "delivery",
                 "pharmacy_name": "CVS Pharmacy - Westwood Blvd",
+                "medication": "Atorvastatin",
+                "dosage": "20 mg",
             },
         )
         status = build_pharmacy_fulfillment_status(request)
@@ -49,7 +51,14 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(status.payment_quote.payment_method, "fet_direct")
 
     def test_pharmacy_monitoring_results(self):
-        request = self.make_request("metformin 500mg sent to CVS Westwood for pickup")
+        request = self.make_request(
+            "Keep checking whether my prescription is ready at CVS Westwood for pickup",
+            {
+                "location": "Los Angeles, CA",
+                "preference": "pickup",
+                "pharmacy_name": "CVS Pharmacy - Westwood Blvd",
+            },
+        )
         status = build_pharmacy_fulfillment_status(request)
 
         paid = pharmacy_monitoring_result(request, status)
@@ -64,6 +73,14 @@ class AgentLogicTests(unittest.TestCase):
         self.assertTrue(any("Payment completed" in event for event in paid.timeline_events))
         self.assertEqual(unpaid.status, "payment_required")
         self.assertIn("active automatic monitoring", unpaid.summary)
+
+    def test_pharmacy_status_can_infer_hidden_pending_prescription(self):
+        request = self.make_request("Is my prescription ready at CVS Westwood?")
+        status = build_pharmacy_fulfillment_status(request)
+
+        self.assertEqual(status.medication, "Metformin")
+        self.assertEqual(status.dosage, "500 mg")
+        self.assertEqual(status.status, "in_progress")
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))

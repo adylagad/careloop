@@ -19,7 +19,7 @@ from models import CareRequest, CareResult
 AGENT_NAME = "careloop-payment-buyer-demo"
 PORT = env_int("PAYMENT_BUYER_AGENT_PORT", 8017)
 BUYER_MODE = os.getenv("PAYMENT_BUYER_MODE", "commit").lower()
-PHARMACY_AGENT_ADDRESS = os.getenv("PHARMACY_AGENT_ADDRESS", "")
+PHARMACY_AGENT_ADDRESS = os.getenv("PRESCRIPTION_STATUS_AGENT_ADDRESS") or os.getenv("PHARMACY_AGENT_ADDRESS", "")
 
 agent = create_careloop_agent(
     name=AGENT_NAME,
@@ -85,7 +85,7 @@ async def startup(ctx: Context):
             CareRequest(
                 case_id=make_case_id("payment-demo"),
                 user_id=ctx.agent.address,
-                text="My doctor sent Metformin 500mg to CVS Westwood. Keep checking until it is ready for pickup.",
+                text="Keep checking whether my prescription is ready at CVS Westwood for pickup.",
                 context={
                     "location": "Los Angeles, CA",
                     "preference": "pickup",
