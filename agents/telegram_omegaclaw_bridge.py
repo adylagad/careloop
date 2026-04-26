@@ -6,6 +6,7 @@ CareLoop Orchestrator keeps the same routing/state behavior used in ASI:One.
 from __future__ import annotations
 
 import os
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,8 @@ from orchestrator_agent import orchestrator_chat_response
 
 
 load_dotenv()
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/{method}"
 DEFAULT_POLL_SECONDS = 1.5
