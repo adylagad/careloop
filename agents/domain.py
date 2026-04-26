@@ -353,23 +353,38 @@ def _infer_otc_need(text: str) -> str:
 
 
 def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
+    online_prices = "\n".join(
+        f"- {item.name}: {item.unit_price_usd} via {item.provider} ({item.price_source})"
+        for item in [order.product, *order.alternatives]
+    )
     alternatives = "\n".join(
-        f"- {item.name}: {item.reason} ({item.unit_price_usd}; {item.price_source})"
+        f"- {item.name}: {item.reason}"
         for item in order.alternatives
     )
     locations = "\n".join(f"- {item}" for item in (order.nearby_pharmacies or []))
     if not locations:
         locations = "- I could not fetch nearby pharmacy locations right now."
+    offline_prices = "\n".join(
+        f"- {item}: local shelf price not available from free public APIs; call or check store app before going."
+        for item in (order.nearby_pharmacies or [])
+    )
+    if not offline_prices:
+        offline_prices = "- No offline pharmacy price data found."
     return (
         "CareLoop Pharmacy Assistant\n\n"
         f"Need: {order.user_need}\n"
         f"Address area: {order.address_hint}\n"
         f"Location source: {order.location_source}\n\n"
+        "Price comparison found:\n"
+        "Online prices:\n"
+        f"{online_prices}\n\n"
+        "Offline pickup options:\n"
+        f"{offline_prices}\n\n"
         "Recommended OTC option:\n"
         f"- Item: {order.product.name} ({order.product.active_ingredient} {order.product.strength})\n"
         f"- Package: {order.product.package_size}\n"
         f"- Quantity: {order.quantity}\n"
-        f"- Real quoted subtotal: {order.subtotal_usd}\n"
+        f"- Best online quoted subtotal found: {order.subtotal_usd}\n"
         f"- Price source: {order.product.price_source}\n"
         f"- Provider: {order.product.provider}\n"
         f"- Availability: {order.product.availability}\n\n"
@@ -381,6 +396,8 @@ def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
         f"Payment reference: {order.payment_quote.reference}\n\n"
         "After FET payment, I create the CareLoop order record and return the checkout handoff. "
         "The final product purchase, shipping address, and card payment happen on the provider checkout page.\n\n"
+        "Offline price note: free public data exposes nearby pharmacy locations, but not live local OTC shelf prices "
+        "for CVS/Walgreens/Rite Aid. I only show prices I can verify from public quote APIs.\n\n"
         f"Safety note: {order.product.safety_note}"
     )
 

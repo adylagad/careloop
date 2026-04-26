@@ -139,7 +139,8 @@ def _answer_followup(sender: str, question: str, order: PharmacyOrderQuote) -> s
         "You are CareLoop Pharmacy Assistant, an OTC-only pharmacy ordering assistant. "
         "Use the user's previous OTC recommendation context. Be concise, do not diagnose, "
         "do not claim local store inventory or local shelf price unless provided. If pickup is requested, "
-        "use the provided OpenStreetMap pharmacy list and say local inventory should be confirmed."
+        "use the provided OpenStreetMap pharmacy list and say local inventory and shelf price should be confirmed. "
+        "Compare online and offline options when asked: online has real quote data, offline has real locations but no free live shelf-price API."
     )
     pharmacy_lines = "\n".join(f"- {item}" for item in pickup.pharmacies) or "- none fetched"
     user_prompt = (

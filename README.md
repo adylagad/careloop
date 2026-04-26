@@ -43,12 +43,14 @@ assistant to recommend and prepare an OTC delivery order.
 `careloop-pharmacy-assistant` is an OTC-only specialist. Prescription readiness belongs
 to the CareLoop orchestrator because it needs patient care context. This agent handles
 queries like "find the best allergy medicine near Westwood" or "order Tylenol for
-delivery." It ranks mocked OTC options, explains why the selected product fits, includes
-safety notes, requests a 0.05 FET CareLoop service fee through the Payment Protocol,
-creates an order record after payment, and returns a provider checkout handoff. Amazon
-does not expose a normal public consumer API for fully automatic checkout, shipping,
-payment, and purchase confirmation, so the real fulfillment handoff is a safe provider
-checkout URL while the agent-owned order/payment behavior is demonstrated through FET.
+delivery." It compares online prices it can verify from public quote APIs, shows nearby
+offline pickup locations from OpenStreetMap, explains where local shelf prices are not
+available from free public APIs, ranks OTC options, includes safety notes, requests a
+0.05 FET CareLoop service fee through the Payment Protocol, creates an order record
+after payment, and returns a provider checkout handoff. Amazon does not expose a normal
+public consumer API for fully automatic checkout, shipping, payment, and purchase
+confirmation, so the real fulfillment handoff is a safe provider checkout URL while the
+agent-owned order/payment behavior is demonstrated through FET.
 The agent also remembers the latest OTC recommendation per ASI:One sender so follow-up
 questions such as "which is nearest to USC Village for pickup?" use the previous medicine
 context instead of starting over.

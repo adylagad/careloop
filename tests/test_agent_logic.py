@@ -101,6 +101,8 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(order.product.active_ingredient, "Loratadine")
         self.assertEqual(order.payment_quote.currency, "FET")
         self.assertIn("Other options considered", preview)
+        self.assertIn("Price comparison found", preview)
+        self.assertIn("Offline pickup options", preview)
         self.assertIn("Checkout handoff", preview)
         self.assertEqual(paid.status, "order_ready_for_checkout")
         self.assertIn("https://www.costplusdrugs.com", paid.summary)
