@@ -18,6 +18,11 @@ from uagents_core.contrib.protocols.payment import (
 
 from chat_protocol import create_chat_protocol, create_text_chat
 from config import create_careloop_agent, env_int
+from doctor_office import (
+    AGENT_NAME as DOCTOR_OFFICE_AGENT_NAME,
+    book_doctor_office_appointment,
+    is_doctor_office_booking_intent,
+)
 from domain import (
     APPOINTMENT_AGENT_NAME,
     APPOINTMENT_SERVICE_FEE_FET,
@@ -69,11 +74,13 @@ ALLOWED_ROUTES = {
     "careloop-prescription-explainer",
     PHARMACY_ASSISTANT_AGENT_NAME,
     APPOINTMENT_AGENT_NAME,
+    DOCTOR_OFFICE_AGENT_NAME,
     "careloop-caregiver-notifier",
     "careloop-adherence",
     "careloop-orchestrator",
     "clarify",
 }
+DOCTOR_OFFICE_AGENT_ADDRESS = os.getenv("DOCTOR_OFFICE_AGENT_ADDRESS") or ""
 
 
 @dataclass
@@ -107,6 +114,7 @@ class PendingOrchestratorPayment:
 
 pending_payments: dict[str, PendingOrchestratorPayment] = {}
 pending_by_sender: dict[str, str] = {}
+pending_doctor_bookings_by_case: dict[str, str] = {}
 
 
 def _session(sender: str) -> OrchestratorSession:
@@ -391,7 +399,15 @@ def _should_answer_saved_followup_before_llm(text: str) -> bool:
 
 
 def _direct_current_intent(text: str) -> dict[str, str] | None:
-    decision = triage_route(_message_text(text))
+    clean_text = _message_text(text)
+    if is_doctor_office_booking_intent(clean_text):
+        return {
+            "route": DOCTOR_OFFICE_AGENT_NAME,
+            "confidence": "high",
+            "rationale": "The user wants a simple primary-care doctor appointment that the demo doctor office can book.",
+        }
+
+    decision = triage_route(clean_text)
     route = decision["route"]
     if route == "clarify":
         return None
@@ -405,11 +421,14 @@ def _llm_triage_decision(sender: str, text: str, session: OrchestratorSession) -
         "You are CareLoop's intent router. Classify the current user message into exactly one route. "
         "Prefer the current message over old context unless the current message is clearly a follow-up. "
         "Routes: careloop-prescription-explainer, careloop-pharmacy-assistant, "
-        "careloop-appointment-assistant, careloop-caregiver-notifier, careloop-adherence, "
+        "careloop-appointment-assistant, careloop-doctor-office, careloop-caregiver-notifier, careloop-adherence, "
         "careloop-orchestrator, clarify. "
         "Use careloop-pharmacy-assistant for OTC medicine search/order/price/location questions, "
         "including Tylenol, Advil, Claritin, allergy medicine, pain medicine, pharmacy, or where to buy medicine. "
-        "Use careloop-appointment-assistant for doctors, clinics, appointments, MRI, imaging, scans, or booking care. "
+        "Use careloop-doctor-office when the user wants to book a normal doctor or primary-care appointment "
+        "for cough, fever, cold, flu, sore throat, or a simple sick visit. "
+        "Use careloop-appointment-assistant for open-ended provider searches, specialists, MRI, imaging, scans, "
+        "or finding external booking links. "
         "Use careloop-caregiver-notifier for drafting/telling/texting/emailing a family member, caretaker, or caregiver. "
         "If the user asks to write an email or message about their current situation, use careloop-caregiver-notifier. "
         "Return only compact JSON with keys route, confidence, rationale."
@@ -516,6 +535,8 @@ def _specialist_handle(route: str) -> str:
         return "@careloop-pharmacy-options"
     if route == APPOINTMENT_AGENT_NAME:
         return "@careloop-appointment-assistant"
+    if route == DOCTOR_OFFICE_AGENT_NAME:
+        return "@careloop-doctor-office"
     if route == "careloop-caregiver-notifier":
         return "@careloop-caregiver-notifier"
     if route == "careloop-adherence":
@@ -936,7 +957,21 @@ def _local_result(route: str, request: CareRequest) -> CareResult:
         return notify_caregiver(request)
     if route == "careloop-adherence":
         return build_adherence_plan(request)
+    if route == DOCTOR_OFFICE_AGENT_NAME:
+        return book_doctor_office_appointment(request)
     return triage_request(request)
+
+
+def _format_direct_booking_result(session: OrchestratorSession, result: CareResult) -> str:
+    for event in result.timeline_events or []:
+        _add_timeline(session, event)
+    _add_timeline(session, "Doctor appointment confirmed")
+    session.last_route = result.agent_name
+    session.last_text = result.summary
+    return (
+        f"{result.summary}\n\n"
+        "I can also write or send a caregiver email about this appointment."
+    )
 
 
 def _complete_paid_work(pending: PendingOrchestratorPayment, session: OrchestratorSession) -> str:
@@ -978,6 +1013,14 @@ async def _route_decision(
     _add_timeline(session, f"Triage route: {route} ({decision['confidence']})")
 
     request = CareRequest(case_id=session.case_id, user_id=sender, text=route_text)
+    if route == DOCTOR_OFFICE_AGENT_NAME:
+        if DOCTOR_OFFICE_AGENT_ADDRESS:
+            pending_doctor_bookings_by_case[request.case_id] = sender
+            _add_timeline(session, "Doctor office booking requested")
+            await ctx.send(DOCTOR_OFFICE_AGENT_ADDRESS, request)
+            return "I’m booking this with CareLoop Doctor Office now. I’ll send the confirmed appointment here."
+        return _format_direct_booking_result(session, book_doctor_office_appointment(request))
+
     if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
         return await _begin_paid_work(ctx, sender, route, request, session)
 
@@ -996,6 +1039,9 @@ def _route_decision_preview(
     _add_timeline(session, f"Triage route: {route} ({decision['confidence']})")
 
     request = CareRequest(case_id=session.case_id, user_id=sender, text=route_text)
+    if route == DOCTOR_OFFICE_AGENT_NAME:
+        return _format_direct_booking_result(session, book_doctor_office_appointment(request))
+
     if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
         return _paid_handoff(route, route_text, session, decision["rationale"])
 
@@ -1018,6 +1064,9 @@ def _complete_local_route(session: OrchestratorSession, route: str, request: Car
         )
 
     result = _local_result(route, request)
+    if route == DOCTOR_OFFICE_AGENT_NAME:
+        return _format_direct_booking_result(session, result)
+
     for event in result.timeline_events or []:
         _add_timeline(session, event)
     next_actions = "\n".join(f"- {action}" for action in result.next_actions)
@@ -1128,6 +1177,16 @@ async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
 
 @care_proto.on_message(CareResult)
 async def handle_care_result(ctx: Context, sender: str, msg: CareResult):
+    original_sender = pending_doctor_bookings_by_case.pop(msg.case_id, None)
+    if original_sender:
+        session = _session(original_sender)
+        _add_timeline(session, f"Specialist result received: {msg.agent_name} ({msg.status})")
+        for event in msg.timeline_events or []:
+            _add_timeline(session, event)
+        await ctx.send(original_sender, create_text_chat(_format_direct_booking_result(session, msg)))
+        ctx.logger.info(f"{AGENT_NAME}: forwarded doctor office result for {msg.case_id} to {original_sender}")
+        return
+
     session = _session(sender)
     _add_timeline(session, f"Specialist result received: {msg.agent_name} ({msg.status})")
     ctx.logger.info(f"{AGENT_NAME}: received specialist result from {sender}: {msg.status}")

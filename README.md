@@ -30,6 +30,9 @@ layer is included yet.
 - `careloop-appointment-assistant` — paid real-data appointment search and booking
   handoff specialist. It searches visible booking/provider data, returns links, and
   keeps state for follow-up questions.
+- `careloop-doctor-office` — demo doctor-office agent for a controlled end-to-end
+  booking. It can create a Google Calendar event for cough/fever/simple primary-care
+  visits and invite the patient email.
 - `careloop-caregiver-notifier` — OmegaClaw-friendly caregiver update specialist. It
   turns care events or upstream `CareResult` messages into SMS/email-style caregiver
   notifications with urgency labels, clear next steps, and medication-safety language.
@@ -152,11 +155,15 @@ My dad has chest pain and cannot breathe.
 `careloop-orchestrator` is the demo-facing CareLoop coordinator. It is stateful, starts
 with triage, keeps a demo timeline, and starts paid appointment/pharmacy searches with a
 patient-facing FET service-fee step.
+For a simple cough/fever primary-care booking, it can route internally to
+`careloop-doctor-office` and return a real Google Calendar booking confirmation in the
+same ASI:One chat.
 
 Example ASI:One prompts:
 
 ```text
 Find an MRI scan near USC Village.
+I have cough and fever. Book me a doctor tomorrow morning.
 Write a text to my daughter that Dad's appointment is booked tomorrow.
 timeline
 ```
@@ -187,6 +194,31 @@ Which option is closest?
 Direct automatic booking requires a partner booking API such as Zocdoc for Developers.
 The agent is structured so that can be added when credentials are available; until then,
 it returns a real booking handoff link and does not claim the appointment is confirmed.
+
+## Doctor Office Agent
+
+`careloop-doctor-office` is the controlled demo path for actual booking behavior. It is
+not a provider search engine. It represents a demo doctor office, selects a simple slot
+for cough/fever/cold/sore-throat/primary-care requests, creates a Google Calendar event
+on the configured doctor calendar, and invites `GOOGLE_CALENDAR_PATIENT_EMAIL`
+(`adyhacks@gmail.com` by default).
+
+Example ASI:One prompt through the orchestrator:
+
+```text
+I have a bad cough and fever. Book me a doctor tomorrow morning.
+```
+
+Calendar config:
+
+```bash
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REFRESH_TOKEN=
+GOOGLE_CALENDAR_DOCTOR_ID=primary
+GOOGLE_CALENDAR_PATIENT_EMAIL=adyhacks@gmail.com
+DOCTOR_OFFICE_AGENT_ADDRESS=
+```
 
 ## MCP Servers (Claude Code)
 

@@ -13,6 +13,12 @@ sys.path.insert(0, str(AGENTS))
 os.environ["BROWSER_USE_API_KEY"] = ""
 os.environ["ASI1_API_KEY"] = ""
 os.environ["ASI_ONE_API_KEY"] = ""
+os.environ["GOOGLE_CLIENT_ID"] = ""
+os.environ["GOOGLE_CLIENT_SECRET"] = ""
+os.environ["GOOGLE_REFRESH_TOKEN"] = ""
+os.environ["GMAIL_CLIENT_ID"] = ""
+os.environ["GMAIL_CLIENT_SECRET"] = ""
+os.environ["GMAIL_REFRESH_TOKEN"] = ""
 
 from domain import (  # noqa: E402
     APPOINTMENT_SERVICE_FEE_FET,
@@ -52,6 +58,7 @@ from appointment_agent import (  # noqa: E402
 from appointment_data import infer_appointment_specialty, infer_location, parse_browser_appointment_text  # noqa: E402
 from browser_cache import browser_cache_key, cached_browser_call  # noqa: E402
 from caregiver_agent import CAREGIVER_CONTEXT_BY_SENDER, caregiver_chat_response  # noqa: E402
+from doctor_office import AGENT_NAME as DOCTOR_OFFICE_AGENT_NAME, book_doctor_office_appointment, is_doctor_office_booking_intent  # noqa: E402
 from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  # noqa: E402
 from pharmacy_agent import PAYMENT_REQUEST_VERSION, PendingOrderPayment, _load_pending_by_sender, _pending_payment_message, _pending_requires_refresh, _request_fingerprint, _store_pending, pending_by_sender, pending_orders  # noqa: E402
 from pharmacy_data import _parse_browser_price_text  # noqa: E402
@@ -808,6 +815,31 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(decision["route"], "careloop-pharmacy-assistant")
         self.assertEqual(decision["confidence"], "high")
         mock_asi.assert_called_once()
+
+    def test_doctor_office_books_mock_without_calendar_env(self):
+        request = self.make_request("I have a cough and fever. book me a doctor tomorrow morning")
+
+        with patch.object(orchestrator_agent, "DOCTOR_OFFICE_AGENT_ADDRESS", ""):
+            result = book_doctor_office_appointment(request)
+
+        self.assertTrue(is_doctor_office_booking_intent(request.text))
+        self.assertEqual(result.agent_name, DOCTOR_OFFICE_AGENT_NAME)
+        self.assertEqual(result.status, "booked")
+        self.assertIn("Appointment booked", result.summary)
+        self.assertIn("Dr. Maya Patel", result.summary)
+        self.assertIn("mock_confirmed_calendar_not_configured", result.summary)
+
+    def test_orchestrator_routes_cough_booking_to_doctor_office(self):
+        sender = "orchestrator-doctor-office-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        with patch.object(orchestrator_agent, "DOCTOR_OFFICE_AGENT_ADDRESS", ""):
+            response = orchestrator_chat_response(None, sender, "I have cough and fever. book me a doctor tomorrow morning")
+
+        self.assertIn("Appointment booked", response)
+        self.assertIn("Dr. Maya Patel", response)
+        self.assertIn("CareLoop Family Clinic", response)
+        self.assertNotIn("0.1 FET", response)
 
     def test_orchestrator_saved_followup_is_only_for_short_followups(self):
         self.assertTrue(orchestrator_agent._should_answer_saved_followup_before_llm("closest location"))
