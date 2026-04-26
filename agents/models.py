@@ -28,6 +28,15 @@ class PaymentQuote(Model):
     reference: str
 
 
+class PaidSpecialistRequest(Model):
+    case_id: str
+    buyer_sender: str
+    text: str
+    context: dict[str, Any] | None = None
+    source_agent: str
+    source_chat: str = "asi-one"
+
+
 class PrescriptionDocumentRequest(Model):
     case_id: str
     user_id: str

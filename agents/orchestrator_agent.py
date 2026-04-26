@@ -38,7 +38,7 @@ from domain import (
     triage_request,
     triage_route,
 )
-from models import CareRequest, CareResult, PaymentQuote
+from models import CareRequest, CareResult, PaidSpecialistRequest, PaymentQuote
 
 
 AGENT_NAME = "careloop-orchestrator"
@@ -63,6 +63,14 @@ MAX_ORCHESTRATOR_CONTEXTS = 100
 PAYMENT_REQUEST_DEADLINE_SECONDS = 300
 PAYMENT_EXPIRY_SECONDS = PAYMENT_REQUEST_DEADLINE_SECONDS - 15
 PAYMENT_REQUEST_VERSION = "orchestrator-paid-work-card-only-v2"
+APPOINTMENT_ASSISTANT_AGENT_ADDRESS = os.getenv(
+    "APPOINTMENT_ASSISTANT_AGENT_ADDRESS",
+    "agent1qfz9qtd7tafvmjkwrm35w0azl8as8lfk8vr3l2j94wxjcls9uhrtwrsvua9",
+)
+PHARMACY_ASSISTANT_AGENT_ADDRESS = os.getenv(
+    "PHARMACY_ASSISTANT_AGENT_ADDRESS",
+    os.getenv("PHARMACY_AGENT_ADDRESS", "agent1qde72t682l6mag4jlaprzkuhlv5hnch75men90j8a6894hv6uwhaylrnvkp"),
+)
 
 
 @dataclass
@@ -277,6 +285,14 @@ def _specialist_handle(route: str) -> str:
     return f"@{route}"
 
 
+def _specialist_address(route: str) -> str:
+    if route == PHARMACY_ASSISTANT_AGENT_NAME:
+        return PHARMACY_ASSISTANT_AGENT_ADDRESS
+    if route == APPOINTMENT_AGENT_NAME:
+        return APPOINTMENT_ASSISTANT_AGENT_ADDRESS
+    return ""
+
+
 def _paid_handoff(route: str, text: str, session: OrchestratorSession, reason: str) -> str:
     handle = _specialist_handle(route)
     session.timeline.append(f"Paid specialist handoff prepared: {route}")
@@ -375,6 +391,27 @@ async def _begin_paid_work(
     request: CareRequest,
     session: OrchestratorSession,
 ) -> str | None:
+    specialist_address = _specialist_address(route)
+    if specialist_address:
+        handle = _specialist_handle(route)
+        session.timeline.append(f"Routed paid work to {route}")
+        await ctx.send(
+            specialist_address,
+            PaidSpecialistRequest(
+                case_id=request.case_id,
+                buyer_sender=sender,
+                text=request.text,
+                context=request.context,
+                source_agent=AGENT_NAME,
+            ),
+        )
+        return (
+            f"CareLoop routed this to {handle} internally.\n\n"
+            "You do not need to paste the query again. The specialist should show the FET Pay/Reject card next, "
+            "then return the search result after payment.\n\n"
+            f"{_format_timeline(session)}"
+        )
+
     fingerprint = _request_fingerprint(request, route)
     pending = _load_pending_by_sender(ctx, sender)
     if pending:
