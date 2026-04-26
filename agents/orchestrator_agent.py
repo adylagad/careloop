@@ -27,10 +27,8 @@ from domain import (
     build_otc_order_quote,
     build_otc_service_payment_quote,
     explain_prescription,
-    format_appointment_payment_prompt,
     format_appointment_search_preview,
     format_otc_order_preview,
-    format_otc_payment_prompt,
     make_case_id,
     notify_caregiver,
     orchestrate_care,
@@ -38,7 +36,7 @@ from domain import (
     triage_request,
     triage_route,
 )
-from models import CareRequest, CareResult, PaidSpecialistRequest, PaymentQuote
+from models import CareRequest, CareResult, PaymentQuote
 
 
 AGENT_NAME = "careloop-orchestrator"
@@ -62,15 +60,7 @@ ORCHESTRATOR_CONTEXT_BY_SENDER: dict[str, "OrchestratorSession"] = {}
 MAX_ORCHESTRATOR_CONTEXTS = 100
 PAYMENT_REQUEST_DEADLINE_SECONDS = 300
 PAYMENT_EXPIRY_SECONDS = PAYMENT_REQUEST_DEADLINE_SECONDS - 15
-PAYMENT_REQUEST_VERSION = "orchestrator-paid-work-card-only-v2"
-APPOINTMENT_ASSISTANT_AGENT_ADDRESS = os.getenv(
-    "APPOINTMENT_ASSISTANT_AGENT_ADDRESS",
-    "agent1qfz9qtd7tafvmjkwrm35w0azl8as8lfk8vr3l2j94wxjcls9uhrtwrsvua9",
-)
-PHARMACY_ASSISTANT_AGENT_ADDRESS = os.getenv(
-    "PHARMACY_ASSISTANT_AGENT_ADDRESS",
-    os.getenv("PHARMACY_AGENT_ADDRESS", "agent1qde72t682l6mag4jlaprzkuhlv5hnch75men90j8a6894hv6uwhaylrnvkp"),
-)
+PAYMENT_REQUEST_VERSION = "orchestrator-standard-payment-v3"
 
 
 @dataclass
@@ -285,14 +275,6 @@ def _specialist_handle(route: str) -> str:
     return f"@{route}"
 
 
-def _specialist_address(route: str) -> str:
-    if route == PHARMACY_ASSISTANT_AGENT_NAME:
-        return PHARMACY_ASSISTANT_AGENT_ADDRESS
-    if route == APPOINTMENT_AGENT_NAME:
-        return APPOINTMENT_ASSISTANT_AGENT_ADDRESS
-    return ""
-
-
 def _paid_handoff(route: str, text: str, session: OrchestratorSession, reason: str) -> str:
     handle = _specialist_handle(route)
     session.timeline.append(f"Paid specialist handoff prepared: {route}")
@@ -308,42 +290,35 @@ def _paid_handoff(route: str, text: str, session: OrchestratorSession, reason: s
 
 def _build_paid_quote(route: str, request: CareRequest) -> PaymentQuote:
     if route == APPOINTMENT_AGENT_NAME:
-        quote = build_appointment_payment_quote(request)
-        quote.service_name = "CareLoop Orchestrated Appointment Search"
-        quote.reference = quote.reference.replace("careloop-appointment-search-", "careloop-orchestrator-appointment-")
-        return quote
-    quote = build_otc_service_payment_quote(request)
-    quote.service_name = "CareLoop Orchestrated OTC Search"
-    quote.reference = quote.reference.replace("careloop-otc-order-", "careloop-orchestrator-otc-")
-    return quote
+        return build_appointment_payment_quote(request)
+    return build_otc_service_payment_quote(request)
 
 
 def _format_paid_payment_prompt(route: str, request: CareRequest, quote: PaymentQuote, session: OrchestratorSession) -> str:
-    specialist = _specialist_handle(route)
-    base = (
-        format_appointment_payment_prompt(request, quote)
-        if route == APPOINTMENT_AGENT_NAME
-        else format_otc_payment_prompt(request, quote)
-    )
+    if route == APPOINTMENT_AGENT_NAME:
+        return (
+            "I can check nearby appointment and imaging options for you.\n\n"
+            f"To start the live search, please approve the {quote.amount} FET CareLoop service fee.\n\n"
+            "After payment, I’ll show the providers or booking links I can verify. "
+            "For MRI scans, many centers require a clinician order or referral before scheduling."
+        )
+
     return (
-        f"{base}\n\n"
-        f"CareLoop will handle this directly here after payment, using {specialist} logic. "
-        "You do not need to paste the query again.\n\n"
-        f"{_format_timeline(session)}"
+        "I can compare over-the-counter medicine options and prices for you.\n\n"
+        f"To start the live search, please approve the {quote.amount} FET CareLoop service fee.\n\n"
+        "After payment, I’ll show the online and pickup options I can verify."
     )
 
 
 def _payment_card_content(route: str, quote: PaymentQuote) -> str:
     if route == APPOINTMENT_AGENT_NAME:
         return (
-            "Please complete the FET payment to let CareLoop run the appointment specialist in this chat. "
-            "After payment, CareLoop will search real providers and booking links, then reply here. "
-            "You do not need to paste the query into another agent."
+            "Please complete the FET payment to run the live appointment search. "
+            "After payment, CareLoop will look up real providers and booking links."
         )
     return (
-        "Please complete the FET payment to let CareLoop run the OTC pharmacy specialist in this chat. "
-        "After payment, CareLoop will compare online and pickup options, then reply here. "
-        "You do not need to paste the query into another agent."
+        "Please complete the FET payment to run the live OTC pharmacy price comparison. "
+        "After payment, CareLoop will compare online and pickup options."
     )
 
 
@@ -355,7 +330,7 @@ async def _send_payment_request(ctx: Context, sender: str, route: str, quote: Pa
     except Exception:
         agent_wallet_address = ""
     recipient = agent_wallet_address or str(ctx.agent.address)
-    service = "careloop_orchestrated_appointment_search" if route == APPOINTMENT_AGENT_NAME else "careloop_orchestrated_otc_search"
+    service = "careloop_appointment_search" if route == APPOINTMENT_AGENT_NAME else "careloop_otc_pharmacy_search"
     metadata: dict[str, str] = {
         "agent": AGENT_NAME,
         "service": service,
@@ -391,27 +366,6 @@ async def _begin_paid_work(
     request: CareRequest,
     session: OrchestratorSession,
 ) -> str | None:
-    specialist_address = _specialist_address(route)
-    if specialist_address:
-        handle = _specialist_handle(route)
-        session.timeline.append(f"Routed paid work to {route}")
-        await ctx.send(
-            specialist_address,
-            PaidSpecialistRequest(
-                case_id=request.case_id,
-                buyer_sender=sender,
-                text=request.text,
-                context=request.context,
-                source_agent=AGENT_NAME,
-            ),
-        )
-        return (
-            f"CareLoop routed this to {handle} internally.\n\n"
-            "You do not need to paste the query again. The specialist should show the FET Pay/Reject card next, "
-            "then return the search result after payment.\n\n"
-            f"{_format_timeline(session)}"
-        )
-
     fingerprint = _request_fingerprint(request, route)
     pending = _load_pending_by_sender(ctx, sender)
     if pending:
@@ -420,7 +374,7 @@ async def _begin_paid_work(
             _remove_pending(ctx, pending)
         else:
             await _send_payment_request(ctx, sender, route, pending.quote)
-            return None
+            return _format_paid_payment_prompt(route, request, pending.quote, session)
 
     quote = _build_paid_quote(route, request)
     pending = PendingOrchestratorPayment(
@@ -433,9 +387,9 @@ async def _begin_paid_work(
         request_version=PAYMENT_REQUEST_VERSION,
     )
     _store_pending(ctx, pending)
-    session.timeline.append(f"Payment requested for orchestrated {route}")
+    session.timeline.append("Payment requested")
     await _send_payment_request(ctx, sender, route, quote)
-    return None
+    return _format_paid_payment_prompt(route, request, quote, session)
 
 
 def _local_result(route: str, request: CareRequest) -> CareResult:

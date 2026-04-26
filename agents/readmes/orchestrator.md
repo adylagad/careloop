@@ -2,9 +2,8 @@
 
 CareLoop Orchestrator is the demo-facing coordinator for the CareLoop agent system.
 
-It runs triage first, keeps a visible care timeline, handles safe local coordination
-flows, and routes paid appointment/pharmacy searches to the selected specialist so the
-specialist issues the FET payment card without the user retyping the request.
+It runs triage first, keeps a demo timeline, handles safe local coordination flows, and
+starts paid appointment/pharmacy searches with a patient-facing FET service-fee prompt.
 
 ## Routes
 
@@ -17,6 +16,5 @@ specialist issues the FET payment card without the user retyping the request.
 ## Payment Boundary
 
 The pharmacy and appointment agents remain independently usable. In the orchestrated
-flow, CareLoop sends the selected specialist the original ASI buyer address and request
-text. The specialist then issues the native FET payment card and returns the result after
-payment, so the user does not need to repeat the same request in another chat.
+flow, CareLoop keeps the user in the same conversation and uses the standard appointment
+or OTC payment metadata so ASI:One can render the native FET payment controls.
