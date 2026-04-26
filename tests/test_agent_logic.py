@@ -66,7 +66,7 @@ from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat
 from triage_agent import TRIAGE_CONTEXT_BY_SENDER, triage_chat_response  # noqa: E402
 import orchestrator_agent  # noqa: E402
 from orchestrator_agent import ORCHESTRATOR_CONTEXT_BY_SENDER, OrchestratorSession, orchestrator_chat_response  # noqa: E402
-from telegram_omegaclaw_bridge import split_telegram_message, telegram_sender_id  # noqa: E402
+from telegram_omegaclaw_bridge import TelegramConfig, handle_text, split_telegram_message, telegram_sender_id  # noqa: E402
 import email_delivery  # noqa: E402
 
 
@@ -872,6 +872,10 @@ class AgentLogicTests(unittest.TestCase):
 
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 3900 for chunk in chunks))
+        self.assertIn(
+            "12345",
+            handle_text(TelegramConfig(token="test", allowed_chat_ids=set(), poll_seconds=1.5), 12345, "/whoami"),
+        )
 
     def test_prescription_document_text_explains_actual_label_text(self):
         request = PrescriptionDocumentRequest(

@@ -81,8 +81,8 @@ python agents/telegram_omegaclaw_bridge.py
 ```
 
 8. Open the bot in Telegram and send `/start`.
-9. Optional: get your chat id by temporarily checking the terminal/logs or by using a
-   public `getUpdates` call, then set `TELEGRAM_ALLOWED_CHAT_IDS`.
+9. Optional: send `/whoami` to get your chat id, then set
+   `TELEGRAM_ALLOWED_CHAT_IDS` if you want to restrict the demo bot.
 
 ## Demo Script
 

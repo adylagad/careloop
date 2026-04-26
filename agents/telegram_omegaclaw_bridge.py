@@ -93,10 +93,13 @@ def _update_text(update: dict[str, Any]) -> tuple[int | None, str | None]:
 
 def handle_text(config: TelegramConfig, chat_id: int | str, text: str) -> str:
     normalized = text.strip()
+    if normalized == "/whoami":
+        return f"Your Telegram chat id is {chat_id}."
     if normalized in {"/start", "/help"}:
         return (
             "Hi, I’m CareLoop on Telegram. Tell me what you need help with.\n\n"
-            "Try: I have a bad cough near USC. Can you book me a doctor tomorrow morning?"
+            "Try: I have a bad cough near USC. Can you book me a doctor tomorrow morning?\n\n"
+            "Send /whoami if you want the chat id for TELEGRAM_ALLOWED_CHAT_IDS."
         )
 
     response = orchestrator_chat_response(None, telegram_sender_id(chat_id), normalized)
@@ -107,6 +110,10 @@ def run_bridge() -> None:
     config = load_config()
     offset = int(os.getenv("TELEGRAM_START_OFFSET", "0") or "0")
     print("CareLoop Telegram bridge started.")
+    if config.allowed_chat_ids:
+        print(f"Allowed Telegram chat ids: {', '.join(sorted(config.allowed_chat_ids))}")
+    else:
+        print("Allowed Telegram chat ids: all chats. Set TELEGRAM_ALLOWED_CHAT_IDS to restrict the demo bot.")
 
     while True:
         try:
