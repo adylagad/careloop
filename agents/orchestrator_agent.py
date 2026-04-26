@@ -248,9 +248,9 @@ def _is_short_followup(text: str) -> bool:
 
 def _intro_message() -> str:
     return (
-        "Hi, I’m CareLoop. Tell me what you need help with and I’ll guide the next step.\n\n"
-        "I can help with prescription questions, over-the-counter medicine options, appointment searches, "
-        "caregiver updates, and medication reminders."
+        "Hi, I’m CareLoop. Tell me what is happening and I’ll coordinate the right specialist.\n\n"
+        "I can route prescription questions, OTC medicine orders, appointment searches, caregiver updates, "
+        "and reminder planning. Paid live searches happen in the pharmacy or appointment specialist chats so ASI:One can show the FET card."
     )
 
 
@@ -374,7 +374,7 @@ async def _begin_paid_work(
             _remove_pending(ctx, pending)
         else:
             await _send_payment_request(ctx, sender, route, pending.quote)
-            return None
+            return _format_paid_payment_prompt(route, request, pending.quote, session)
 
     quote = _build_paid_quote(route, request)
     pending = PendingOrchestratorPayment(
@@ -389,7 +389,7 @@ async def _begin_paid_work(
     _store_pending(ctx, pending)
     session.timeline.append("Payment requested")
     await _send_payment_request(ctx, sender, route, quote)
-    return None
+    return _format_paid_payment_prompt(route, request, quote, session)
 
 
 def _local_result(route: str, request: CareRequest) -> CareResult:
