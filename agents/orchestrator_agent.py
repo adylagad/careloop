@@ -91,11 +91,14 @@ class OrchestratorSession:
     last_paid_route: str | None = None
     last_paid_fingerprint: str | None = None
     last_appointment_search: AppointmentSearchQuote | None = None
+    last_confirmed_appointment_summary: str | None = None
     last_otc_order: PharmacyOrderQuote | None = None
     last_caregiver_channel: str | None = None
     last_caregiver_to_email: str | None = None
     last_caregiver_subject: str | None = None
     last_caregiver_body: str | None = None
+    caregiver_sender_name: str | None = None
+    pending_caregiver_email_text: str | None = None
     pending_doctor_booking_text: str | None = None
     pending_pharmacy_request_text: str | None = None
     completed_payment_references: set[str] = field(default_factory=set)
@@ -697,6 +700,12 @@ def _answer_saved_followup(session: OrchestratorSession, text: str) -> str | Non
 
 def _caregiver_context_text(session: OrchestratorSession, text: str) -> str:
     base = _message_text(text)
+    if session.last_confirmed_appointment_summary:
+        return (
+            f"{base}\n\n"
+            "Confirmed appointment context:\n"
+            f"{_plain_confirmed_appointment_context(session)}"
+        )
     if session.last_appointment_search is not None:
         option = session.last_appointment_search.selected_option or (
             session.last_appointment_search.options[0] if session.last_appointment_search.options else None
@@ -718,7 +727,28 @@ def _caregiver_context_text(session: OrchestratorSession, text: str) -> str:
     return base
 
 
+def _plain_confirmed_appointment_context(session: OrchestratorSession) -> str:
+    if not session.last_confirmed_appointment_summary:
+        return ""
+    text = session.last_confirmed_appointment_summary
+    replacements = {
+        "✅": "",
+        "**": "",
+        "|": " ",
+        "---": "",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
+
+
 def _saved_care_context(session: OrchestratorSession) -> str:
+    if session.last_confirmed_appointment_summary:
+        return (
+            "Confirmed appointment:\n"
+            f"{_plain_confirmed_appointment_context(session)}\n"
+            "Status: appointment is booked/confirmed in this CareLoop conversation."
+        )
     if session.last_appointment_search is not None:
         option = session.last_appointment_search.selected_option or (
             session.last_appointment_search.options[0] if session.last_appointment_search.options else None
@@ -769,7 +799,11 @@ def _fallback_caregiver_draft(text: str, result: CareResult, session: Orchestrat
                 fact_text = "I " + fact_text
             break
     fact_text = fact_text.rstrip(".")
-    if "appointment" in lower and session.last_appointment_search is not None:
+    if "appointment" in lower and session.last_confirmed_appointment_summary:
+        confirmed = _plain_confirmed_appointment_context(session)
+        if "CareLoop Family Clinic".lower() not in fact_text.lower():
+            fact_text = f"{fact_text}. Appointment details: {confirmed}"
+    elif "appointment" in lower and session.last_appointment_search is not None:
         option = session.last_appointment_search.selected_option or (
             session.last_appointment_search.options[0] if session.last_appointment_search.options else None
         )
@@ -817,6 +851,54 @@ def _parse_email_draft(raw: str, fallback_subject: str) -> tuple[str, str]:
     return subject, body
 
 
+def _extract_sender_name(text: str) -> str | None:
+    cleaned = _message_text(text).strip()
+    patterns = [
+        r"\bmy name is\s+([A-Za-z][A-Za-z .'-]{1,50})\b",
+        r"\bi am\s+([A-Za-z][A-Za-z .'-]{1,50})\b",
+        r"\bi'm\s+([A-Za-z][A-Za-z .'-]{1,50})\b",
+        r"\bfrom\s+([A-Z][A-Za-z .'-]{1,50})\b",
+        r"\bsign(?:ed)?\s+([A-Za-z][A-Za-z .'-]{1,50})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, re.IGNORECASE)
+        if match:
+            name = re.sub(r"\s+", " ", match.group(1)).strip(" .")
+            if name and len(name.split()) <= 4:
+                return name
+    if re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,50}", cleaned) and len(cleaned.split()) <= 4:
+        return cleaned.strip(" .")
+    return None
+
+
+def _strip_placeholder_signoff(body: str) -> str:
+    lines = body.strip().splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    placeholder_terms = {"best", "best,", "regards", "regards,", "sincerely", "sincerely,", "[your name]"}
+    while lines and lines[-1].strip().lower() in placeholder_terms:
+        lines.pop()
+        while lines and not lines[-1].strip():
+            lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _apply_sender_signature(body: str, sender_name: str | None) -> str:
+    cleaned = _strip_placeholder_signoff(body)
+    if not sender_name:
+        return cleaned
+    lines = cleaned.splitlines()
+    if (
+        len(lines) >= 2
+        and lines[-1].strip().lower() == sender_name.lower()
+        and lines[-2].strip().lower() in {"best", "best,", "regards", "regards,", "sincerely", "sincerely,"}
+    ):
+        cleaned = "\n".join([*lines[:-2], lines[-1]]).strip()
+    if cleaned.lower().endswith(sender_name.lower()):
+        return cleaned
+    return f"{cleaned}\n\n{sender_name}"
+
+
 def _remember_caregiver_draft(
     session: OrchestratorSession,
     *,
@@ -834,6 +916,16 @@ def _remember_caregiver_draft(
 def _smart_caregiver_draft(sender: str, session: OrchestratorSession, text: str, result: CareResult) -> str:
     channel = _caregiver_channel(text)
     to_email = _caregiver_to_email(text)
+    sender_name = _extract_sender_name(text) or session.caregiver_sender_name
+    if channel == "email" and not sender_name:
+        session.pending_caregiver_email_text = text
+        return (
+            "✍️ What name should I sign this email with?\n\n"
+            "Reply with just the name, for example: `Aditya`."
+        )
+    if sender_name:
+        session.caregiver_sender_name = sender_name
+        session.pending_caregiver_email_text = None
     fallback = _fallback_caregiver_draft(text, result, session).split("\n\n", 1)[-1]
     fallback_subject = "CareLoop update"
     llm_answer = asi_chat_completion(
@@ -843,11 +935,14 @@ def _smart_caregiver_draft(sender: str, session: OrchestratorSession, text: str,
             "If the user says 'I', write from the user's point of view. "
             "Use only facts provided in the user request or saved care context. "
             "Do not invent medical advice, appointment times, confirmations, or diagnoses. "
+            "For booked appointments, use the confirmed appointment context if it exists; do not use older search results. "
             "If writing an email, return exactly a Subject line and a Body section. Otherwise write a short text message. "
+            "Do not write 'Best,' or '[Your Name]'. If a sender name is provided, end with that name only. "
             "Return only the message the caregiver should receive."
         ),
         user_prompt=(
             f"Channel: {channel}\n\n"
+            f"Sender name: {sender_name or 'unknown'}\n\n"
             f"User request:\n{_message_text(text)}\n\n"
             f"Saved care context:\n{_saved_care_context(session)}\n\n"
             f"Structured fallback draft:\n{result.summary}\n\n"
@@ -860,6 +955,7 @@ def _smart_caregiver_draft(sender: str, session: OrchestratorSession, text: str,
     draft = (llm_answer or fallback).strip()
     if channel == "email":
         subject, body = _parse_email_draft(draft, fallback_subject)
+        body = _apply_sender_signature(body, sender_name)
         _remember_caregiver_draft(
             session,
             channel="email",
@@ -1029,6 +1125,7 @@ def _format_direct_booking_result(session: OrchestratorSession, result: CareResu
     _add_timeline(session, "Doctor appointment confirmed")
     session.last_route = result.agent_name
     session.last_text = result.summary
+    session.last_confirmed_appointment_summary = result.summary
     return (
         f"{result.summary}\n\n"
         "👨‍👩‍👧 I can also write or send a caregiver email about this appointment."
@@ -1244,6 +1341,21 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         )
     if _is_send_caregiver_email_request(text):
         return _send_saved_caregiver_email(session)
+    if session.pending_caregiver_email_text:
+        sender_name = _extract_sender_name(text)
+        if sender_name:
+            session.caregiver_sender_name = sender_name
+            pending_text = session.pending_caregiver_email_text
+            session.pending_caregiver_email_text = None
+            request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, pending_text))
+            result = notify_caregiver(request)
+            session.last_route = "careloop-caregiver-notifier"
+            session.last_text = _message_text(pending_text)
+            _add_timeline(session, "Triage route: careloop-caregiver-notifier (high)")
+            for event in result.timeline_events or []:
+                _add_timeline(session, event)
+            return _smart_caregiver_draft(sender, session, pending_text, result)
+        return "Please reply with the name to sign the email, for example: `Aditya`."
     if _is_doctor_offer_confirmation(session, text):
         return await _book_doctor_office(ctx, sender, session, session.pending_doctor_booking_text)
     if _is_pharmacy_offer_confirmation(session, text):
@@ -1293,6 +1405,21 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
         )
     if _is_send_caregiver_email_request(text):
         return _send_saved_caregiver_email(session)
+    if session.pending_caregiver_email_text:
+        sender_name = _extract_sender_name(text)
+        if sender_name:
+            session.caregiver_sender_name = sender_name
+            pending_text = session.pending_caregiver_email_text
+            session.pending_caregiver_email_text = None
+            request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, pending_text))
+            result = notify_caregiver(request)
+            session.last_route = "careloop-caregiver-notifier"
+            session.last_text = _message_text(pending_text)
+            _add_timeline(session, "Triage route: careloop-caregiver-notifier (high)")
+            for event in result.timeline_events or []:
+                _add_timeline(session, event)
+            return _smart_caregiver_draft(sender, session, pending_text, result)
+        return "Please reply with the name to sign the email, for example: `Aditya`."
     if _is_doctor_offer_confirmation(session, text):
         return _book_doctor_office_preview(sender, session, session.pending_doctor_booking_text)
     if _is_pharmacy_offer_confirmation(session, text):
