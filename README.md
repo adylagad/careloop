@@ -48,15 +48,23 @@ in progress, delayed, action needed, ready for pickup, or ready for delivery. On
 ASI:One chat checks are free previews; paid uAgent requests use the FET Payment Protocol
 to unlock active monitoring until a terminal status update is available.
 
+The same agent also handles OTC ordering. It can quote common OTC products, request a
+0.05 FET CareLoop service fee through the Payment Protocol, create an order record after
+payment, and return a provider checkout handoff. Amazon does not expose a normal public
+consumer API for fully automatic checkout, shipping, payment, and purchase confirmation,
+so the real fulfillment handoff is a safe provider checkout URL while the agent-owned
+order/payment behavior is demonstrated through FET.
+
 For real-data expansion, the next adapter layer can use openFDA/RxNorm/DailyMed for
 medication reference data, OpenStreetMap for pharmacy locations, and Cost Plus Drugs or
 GoodRx-style APIs for price/formulary data. Live patient-specific readiness still needs
 mocking until a pharmacy/EHR integration is available.
 
-Example ASI:One prompt:
+Example ASI:One prompts:
 
 ```text
 Is my prescription ready at CVS Westwood?
+Order Tylenol for delivery.
 ```
 
 ## Prescription Agent Document Intake

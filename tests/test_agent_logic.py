@@ -10,9 +10,13 @@ AGENTS = ROOT / "agents"
 sys.path.insert(0, str(AGENTS))
 
 from domain import (  # noqa: E402
+    build_otc_order_quote,
     build_pharmacy_fulfillment_status,
     explain_prescription_document,
     explain_prescription,
+    format_otc_order_preview,
+    is_otc_order_intent,
+    otc_order_paid_result,
     orchestrate_care,
     pharmacy_monitoring_result,
     pharmacy_status_update_result,
@@ -81,6 +85,19 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(status.medication, "Metformin")
         self.assertEqual(status.dosage, "500 mg")
         self.assertEqual(status.status, "in_progress")
+
+    def test_pharmacy_assistant_handles_otc_order_quote(self):
+        request = self.make_request("Order Tylenol for delivery")
+        order = build_otc_order_quote(request)
+        preview = format_otc_order_preview(order)
+        paid = otc_order_paid_result(request, order)
+
+        self.assertTrue(is_otc_order_intent(request.text))
+        self.assertEqual(order.product.active_ingredient, "Acetaminophen")
+        self.assertEqual(order.payment_quote.currency, "FET")
+        self.assertIn("Checkout handoff", preview)
+        self.assertEqual(paid.status, "order_ready_for_checkout")
+        self.assertIn("https://pharmacy.amazon.com", paid.summary)
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))

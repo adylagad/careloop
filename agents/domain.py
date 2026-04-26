@@ -3,9 +3,11 @@ from uuid import uuid4
 from models import (
     CareRequest,
     CareResult,
+    OTCProduct,
     PaymentQuote,
     PharmacyFulfillmentStatus,
     PharmacyOption,
+    PharmacyOrderQuote,
     PharmacyRecommendation,
     PrescriptionDocumentRequest,
 )
@@ -19,6 +21,7 @@ from prescription_scanner import (
 PHARMACY_SERVICE_FEE_FET = "0.05"
 PHARMACY_MONITOR_CHECK_MINUTES = 15
 PHARMACY_ASSISTANT_AGENT_NAME = "careloop-pharmacy-assistant"
+OTC_ORDER_SERVICE_FEE_FET = "0.05"
 
 
 def make_case_id(prefix: str = "case") -> str:
@@ -151,6 +154,187 @@ def _infer_pharmacy_name(text: str) -> str:
     return next(
         (display for key, display in pharmacy_map.items() if key in normalized),
         "Westwood Care Pharmacy",
+    )
+
+
+def is_otc_order_intent(text: str) -> bool:
+    normalized = normalize_text(text)
+    order_terms = ["order", "buy", "purchase", "checkout", "add to cart", "ship"]
+    otc_terms = [
+        "tylenol",
+        "acetaminophen",
+        "advil",
+        "ibuprofen",
+        "claritin",
+        "loratadine",
+        "tums",
+        "antacid",
+        "benadryl",
+        "diphenhydramine",
+        "otc",
+        "over the counter",
+    ]
+    return any(term in normalized for term in order_terms) and any(term in normalized for term in otc_terms)
+
+
+def _amazon_pharmacy_url(asin: str) -> str:
+    return f"https://pharmacy.amazon.com/dp/{asin}"
+
+
+def _mock_otc_catalog() -> list[OTCProduct]:
+    return [
+        OTCProduct(
+            name="Tylenol Extra Strength",
+            active_ingredient="Acetaminophen",
+            strength="500 mg",
+            package_size="100 tablets",
+            unit_price_usd="$8.99",
+            availability="Available through Amazon Pharmacy checkout",
+            provider="Amazon Pharmacy",
+            checkout_url=_amazon_pharmacy_url("B08429LBJH"),
+            safety_note="Do not exceed the label maximum. Avoid combining with other acetaminophen-containing products.",
+        ),
+        OTCProduct(
+            name="Advil",
+            active_ingredient="Ibuprofen",
+            strength="200 mg",
+            package_size="100 tablets",
+            unit_price_usd="$9.49",
+            availability="Available through Amazon Pharmacy checkout",
+            provider="Amazon Pharmacy",
+            checkout_url=_amazon_pharmacy_url("B08429R6T7"),
+            safety_note="Ask a clinician before use if the patient has stomach bleeding risk, kidney disease, or takes blood thinners.",
+        ),
+        OTCProduct(
+            name="Basic Care Loratadine",
+            active_ingredient="Loratadine",
+            strength="10 mg",
+            package_size="300 tablets",
+            unit_price_usd="$13.99",
+            availability="Available through Amazon Pharmacy checkout",
+            provider="Amazon Pharmacy",
+            checkout_url=_amazon_pharmacy_url("B09N2SHGBT"),
+            safety_note="Use only as directed on the label. Ask a pharmacist before combining with other allergy medicines.",
+        ),
+        OTCProduct(
+            name="Tums Antacid",
+            active_ingredient="Calcium carbonate",
+            strength="assorted strengths",
+            package_size="search result",
+            unit_price_usd="$6.99",
+            availability="Amazon checkout search handoff",
+            provider="Amazon",
+            checkout_url="https://www.amazon.com/s?k=Tums+antacid+tablets",
+            safety_note="Ask a pharmacist before use if the patient has kidney disease or takes medicines that interact with calcium.",
+        ),
+    ]
+
+
+def _select_otc_product(text: str) -> OTCProduct:
+    normalized = normalize_text(text)
+    catalog = _mock_otc_catalog()
+    if "tylenol" in normalized or "acetaminophen" in normalized:
+        return catalog[0]
+    if "advil" in normalized or "ibuprofen" in normalized:
+        return catalog[1]
+    if "claritin" in normalized or "loratadine" in normalized:
+        return catalog[2]
+    if "tums" in normalized or "antacid" in normalized:
+        return catalog[3]
+    return catalog[0]
+
+
+def _quantity_from_text(text: str) -> int:
+    normalized = normalize_text(text).replace(",", " ")
+    tokens = normalized.split()
+    for index, token in enumerate(tokens):
+        if token.isdigit():
+            number = int(token)
+            if index + 1 < len(tokens) and tokens[index + 1] in {"pack", "packs", "bottle", "bottles"}:
+                return max(1, min(number, 3))
+    return 1
+
+
+def _usd_to_float(value: str) -> float:
+    return float(value.replace("$", "").strip())
+
+
+def build_otc_order_quote(request: CareRequest) -> PharmacyOrderQuote:
+    product = _select_otc_product(request.text)
+    quantity = _quantity_from_text(request.text)
+    subtotal = _usd_to_float(product.unit_price_usd) * quantity
+    reference = f"careloop-otc-order-{request.case_id}-{uuid4().hex[:8]}"
+    quote = PaymentQuote(
+        case_id=request.case_id,
+        service_name="CareLoop OTC Order",
+        amount=OTC_ORDER_SERVICE_FEE_FET,
+        reference=reference,
+    )
+
+    return PharmacyOrderQuote(
+        case_id=request.case_id,
+        product=product,
+        quantity=quantity,
+        subtotal_usd=f"${subtotal:.2f}",
+        fulfillment_method="Amazon checkout handoff",
+        status="quote_ready",
+        payment_quote=quote,
+    )
+
+
+def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
+    return (
+        "CareLoop Pharmacy Assistant\n\n"
+        "OTC order quote:\n"
+        f"- Item: {order.product.name} ({order.product.active_ingredient} {order.product.strength})\n"
+        f"- Package: {order.product.package_size}\n"
+        f"- Quantity: {order.quantity}\n"
+        f"- Estimated product subtotal: {order.subtotal_usd}\n"
+        f"- Provider: {order.product.provider}\n"
+        f"- Availability: {order.product.availability}\n\n"
+        f"Checkout handoff: {order.product.checkout_url}\n\n"
+        f"CareLoop service fee: {order.payment_quote.amount} FET via {order.payment_quote.payment_method}\n"
+        f"Payment reference: {order.payment_quote.reference}\n\n"
+        "After FET payment, I can create the CareLoop order record and return the checkout handoff. "
+        "The final product purchase, shipping address, and card payment happen on the provider checkout page.\n\n"
+        f"Safety note: {order.product.safety_note}"
+    )
+
+
+def otc_order_paid_result(request: CareRequest, order: PharmacyOrderQuote) -> CareResult:
+    return CareResult(
+        case_id=request.case_id,
+        agent_name=PHARMACY_ASSISTANT_AGENT_NAME,
+        status="order_ready_for_checkout",
+        summary=(
+            f"OTC order record created for {order.quantity} x {order.product.name}. "
+            f"Estimated product subtotal is {order.subtotal_usd}. Complete fulfillment here: "
+            f"{order.product.checkout_url}"
+        ),
+        next_actions=[
+            "Open the provider checkout link to confirm shipping and product payment.",
+            "Review the OTC Drug Facts label and ask a pharmacist if unsure.",
+            "Notify caregiver after checkout is completed.",
+        ],
+        timeline_events=[
+            "OTC order quote prepared",
+            f"Payment completed: {order.payment_quote.amount} FET",
+            "Checkout handoff created",
+        ],
+    )
+
+
+def otc_order_unpaid_result(request: CareRequest, reason: str) -> CareResult:
+    return CareResult(
+        case_id=request.case_id,
+        agent_name=PHARMACY_ASSISTANT_AGENT_NAME,
+        status="payment_required",
+        summary=f"OTC order quote is ready, but the CareLoop service fee was not paid. Reason: {reason}",
+        next_actions=[
+            "Approve the 0.05 FET service fee to create the order record.",
+            "Use the checkout handoff only after reviewing the OTC label and caregiver needs.",
+        ],
+        timeline_events=["Payment requested for OTC order"],
     )
 
 

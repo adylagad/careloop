@@ -74,3 +74,25 @@ class PharmacyFulfillmentStatus(Model):
     last_checked: str
     next_check_minutes: int | None = None
     payment_quote: PaymentQuote
+
+
+class OTCProduct(Model):
+    name: str
+    active_ingredient: str
+    strength: str
+    package_size: str
+    unit_price_usd: str
+    availability: str
+    provider: str
+    checkout_url: str
+    safety_note: str
+
+
+class PharmacyOrderQuote(Model):
+    case_id: str
+    product: OTCProduct
+    quantity: int
+    subtotal_usd: str
+    fulfillment_method: str
+    status: str
+    payment_quote: PaymentQuote
