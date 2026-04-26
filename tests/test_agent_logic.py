@@ -29,7 +29,7 @@ from domain import (  # noqa: E402
 )
 from models import CareRequest, PaymentQuote, PrescriptionDocumentRequest  # noqa: E402
 from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  # noqa: E402
-from pharmacy_agent import PendingOrderPayment, _load_pending_by_sender, _pending_payment_message, _pending_requires_refresh, _request_fingerprint, _store_pending, pending_by_sender, pending_orders  # noqa: E402
+from pharmacy_agent import PAYMENT_REQUEST_VERSION, PendingOrderPayment, _load_pending_by_sender, _pending_payment_message, _pending_requires_refresh, _request_fingerprint, _store_pending, pending_by_sender, pending_orders  # noqa: E402
 from pharmacy_data import _parse_browser_price_text  # noqa: E402
 from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat_response  # noqa: E402
 
@@ -170,6 +170,7 @@ class AgentLogicTests(unittest.TestCase):
             response_channel="chat",
             request_fingerprint=_request_fingerprint(request),
             created_at=9999999999,
+            request_version=PAYMENT_REQUEST_VERSION,
         )
 
         _store_pending(None, pending)
@@ -194,6 +195,25 @@ class AgentLogicTests(unittest.TestCase):
             response_channel="chat",
             request_fingerprint=_request_fingerprint(request),
             created_at=9999999999,
+            request_version="legacy",
+        )
+
+        self.assertTrue(_pending_requires_refresh(pending, _request_fingerprint(request)))
+
+    def test_pharmacy_chat_refreshes_old_payment_request_version(self):
+        request = self.make_request(
+            "Find the best allergy medicine near UCLA",
+            {"location": "UCLA", "preference": "pickup"},
+        )
+        quote = build_otc_order_quote(request).payment_quote
+        pending = PendingOrderPayment(
+            original_sender="otc-legacy-version-user",
+            request=request,
+            quote=quote,
+            response_channel="chat",
+            request_fingerprint=_request_fingerprint(request),
+            created_at=9999999999,
+            request_version="legacy",
         )
 
         self.assertTrue(_pending_requires_refresh(pending, _request_fingerprint(request)))

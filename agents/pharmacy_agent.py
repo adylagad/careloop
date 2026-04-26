@@ -77,12 +77,14 @@ class PendingOrderPayment:
     response_channel: str
     request_fingerprint: str
     created_at: float
+    request_version: str
 
 
 pending_orders: dict[str, PendingOrderPayment] = {}
 pending_by_sender: dict[str, str] = {}
 paid_request_by_sender: dict[str, str] = {}
 PAYMENT_EXPIRY_SECONDS = 3600
+PAYMENT_REQUEST_VERSION = "fet-direct-wallet-metadata-v2"
 
 
 def _context_from_chat_text(text: str) -> dict[str, str]:
@@ -145,6 +147,7 @@ def _pending_to_dict(pending: PendingOrderPayment) -> dict[str, Any]:
         "response_channel": pending.response_channel,
         "request_fingerprint": pending.request_fingerprint,
         "created_at": pending.created_at,
+        "request_version": pending.request_version,
     }
 
 
@@ -156,6 +159,7 @@ def _pending_from_dict(data: dict[str, Any]) -> PendingOrderPayment:
         response_channel=str(data["response_channel"]),
         request_fingerprint=str(data["request_fingerprint"]),
         created_at=float(data["created_at"]),
+        request_version=str(data.get("request_version") or "legacy"),
     )
 
 
@@ -246,6 +250,7 @@ def _pending_payment_message(pending: PendingOrderPayment) -> str:
 def _pending_requires_refresh(pending: PendingOrderPayment, request_fingerprint: str) -> bool:
     return (
         pending.request_fingerprint != request_fingerprint
+        or pending.request_version != PAYMENT_REQUEST_VERSION
         or pending.quote.amount != OTC_ORDER_SERVICE_FEE_FET
         or pending.quote.currency != "FET"
         or pending.quote.payment_method != "fet_direct"
@@ -303,6 +308,26 @@ def _fallback_followup_answer(question: str, order: PharmacyOrderQuote) -> str:
 
 
 async def _send_otc_payment_request(ctx: Context, sender: str, quote: PaymentQuote) -> None:
+    use_testnet = os.getenv("FET_USE_TESTNET", "true").lower() == "true"
+    agent_wallet_address = ""
+    try:
+        agent_wallet_address = str(agent.wallet.address())
+    except Exception:
+        agent_wallet_address = ""
+    recipient = agent_wallet_address or str(ctx.agent.address)
+    metadata: dict[str, str] = {
+        "agent": AGENT_NAME,
+        "service": "careloop_otc_pharmacy_search",
+        "fet_network": "stable-testnet" if use_testnet else "mainnet",
+        "mainnet": "false" if use_testnet else "true",
+        "content": (
+            "Please complete the FET payment to run the live OTC pharmacy price comparison. "
+            "After payment, CareLoop will compare online and pickup options."
+        ),
+    }
+    if agent_wallet_address:
+        metadata["provider_agent_wallet"] = agent_wallet_address
+
     payment_request = RequestPayment(
         accepted_funds=[
             Funds(
@@ -311,11 +336,11 @@ async def _send_otc_payment_request(ctx: Context, sender: str, quote: PaymentQuo
                 payment_method=quote.payment_method,
             )
         ],
-        recipient=ctx.agent.address,
+        recipient=recipient,
         deadline_seconds=300,
         reference=quote.reference,
         description=f"{quote.service_name} service fee",
-        metadata={},
+        metadata=metadata,
     )
     ctx.logger.info(f"{AGENT_NAME}: sending native FET payment request to {sender}: {payment_request}")
     await ctx.send(sender, payment_request)
@@ -435,6 +460,7 @@ async def pharmacy_chat_handler(ctx: Context, sender: str, text: str) -> str:
         response_channel="chat",
         request_fingerprint=request_fingerprint,
         created_at=time.time(),
+        request_version=PAYMENT_REQUEST_VERSION,
     )
     _store_pending(ctx, pending)
     await _send_otc_payment_request(ctx, sender, quote)
@@ -468,6 +494,7 @@ async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
         response_channel="care",
         request_fingerprint=_request_fingerprint(msg),
         created_at=time.time(),
+        request_version=PAYMENT_REQUEST_VERSION,
     )
     _store_pending(ctx, pending)
     ctx.logger.info(f"{AGENT_NAME}: requesting {quote.amount} {quote.currency} for OTC order from {sender}")
