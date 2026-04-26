@@ -139,6 +139,9 @@ class AgentLogicTests(unittest.TestCase):
     def test_pharmacy_assistant_separates_prescription_status_intent(self):
         self.assertTrue(is_pharmacy_status_intent("Is my prescription ready at CVS Westwood?"))
         self.assertFalse(is_otc_order_intent("Is my prescription ready at CVS Westwood?"))
+        self.assertTrue(is_otc_order_intent("Can you help me find Tylenol, where do I get it from?"))
+        self.assertTrue(is_otc_order_intent("Help me with Tylenol pharmacy"))
+        self.assertTrue(is_otc_order_intent("I need an OTC medicine"))
 
     def test_pharmacy_assistant_answers_followup_from_last_otc_context(self):
         sender = "otc-followup-user"
@@ -602,6 +605,46 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("UCLA Health", response)
         self.assertNotIn("Use this booking/search link", response)
         self.assertNotIn("bad cough", response)
+
+    def test_orchestrator_new_otc_request_wins_over_saved_appointment_followup(self):
+        sender = "orchestrator-otc-after-appointment-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+        session = OrchestratorSession(case_id="careloop-test")
+        ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = session
+        option = AppointmentOption(
+            provider_name="UCLA Health",
+            specialty="primary care",
+            location="100 UCLA Medical Plaza, Los Angeles, CA",
+            phone="310-555-0100",
+            booking_url="https://example.com/ucla",
+            source="test",
+        )
+        session.last_paid_route = "careloop-appointment-assistant"
+        session.last_appointment_search = AppointmentSearchQuote(
+            case_id=session.case_id,
+            specialty="primary care",
+            location="UCLA",
+            options=[option],
+            selected_option=option,
+            data_sources=["test"],
+            status="booking_handoff_ready",
+            payment_quote=PaymentQuote(
+                case_id=session.case_id,
+                service_name="CareLoop Appointment Search",
+                amount="0.1",
+                reference="test-ref",
+            ),
+        )
+
+        response = orchestrator_chat_response(
+            None,
+            sender,
+            "can you help me find tylenol. where do i get it from",
+        )
+
+        self.assertIn("over-the-counter medicine", response)
+        self.assertIn("0.1 FET", response)
+        self.assertNotIn("UCLA Health", response)
 
     def test_prescription_and_orchestrator_outputs(self):
         request = self.make_request("Explain lisinopril 10mg and book a doctor")

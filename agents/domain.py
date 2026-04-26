@@ -176,6 +176,40 @@ def _infer_pharmacy_name(text: str) -> str:
 
 def is_otc_order_intent(text: str) -> bool:
     normalized = normalize_text(text)
+    explicit_otc_terms = [
+        "tylenol",
+        "acetaminophen",
+        "advil",
+        "ibuprofen",
+        "claritin",
+        "loratadine",
+        "tums",
+        "antacid",
+        "benadryl",
+        "diphenhydramine",
+        "otc",
+        "over the counter",
+        "medicine",
+        "medication",
+        "pharmacy",
+    ]
+    appointment_terms = [
+        "doctor",
+        "appointment",
+        "provider",
+        "physician",
+        "clinic",
+        "urgent care",
+        "mri",
+        "scan",
+        "imaging",
+        "radiology",
+    ]
+    if any(term in normalized for term in appointment_terms) and not any(
+        term in normalized for term in explicit_otc_terms
+    ):
+        return False
+
     order_terms = [
         "order",
         "buy",
@@ -185,9 +219,19 @@ def is_otc_order_intent(text: str) -> bool:
         "ship",
         "recommend",
         "find",
+        "get",
+        "help",
+        "need",
+        "where do i get",
+        "where can i get",
+        "where do i buy",
+        "where can i buy",
         "best",
         "need something",
         "what should i get",
+        "pharmacy",
+        "store",
+        "near me",
     ]
     otc_terms = [
         "tylenol",

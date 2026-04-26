@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass, field
 from time import time
@@ -36,6 +37,7 @@ from domain import (
     triage_request,
     triage_route,
 )
+from llm import asi_chat_completion
 from models import AppointmentSearchQuote, CareRequest, CareResult, PaymentQuote, PharmacyOrderQuote
 
 
@@ -61,6 +63,15 @@ MAX_ORCHESTRATOR_CONTEXTS = 100
 PAYMENT_REQUEST_DEADLINE_SECONDS = 300
 PAYMENT_EXPIRY_SECONDS = PAYMENT_REQUEST_DEADLINE_SECONDS - 15
 PAYMENT_REQUEST_VERSION = "orchestrator-standard-payment-v3"
+ALLOWED_ROUTES = {
+    "careloop-prescription-explainer",
+    PHARMACY_ASSISTANT_AGENT_NAME,
+    APPOINTMENT_AGENT_NAME,
+    "careloop-caregiver-notifier",
+    "careloop-adherence",
+    "careloop-orchestrator",
+    "clarify",
+}
 
 
 @dataclass
@@ -292,6 +303,97 @@ def _is_result_followup(text: str) -> bool:
         "delivery",
     ]
     return any(term in normalized for term in followup_terms)
+
+
+def _is_generic_saved_result_followup(text: str) -> bool:
+    normalized = _message_text(text).lower()
+    if not _is_result_followup(text):
+        return False
+    new_intent_terms = [
+        "tylenol",
+        "acetaminophen",
+        "advil",
+        "ibuprofen",
+        "claritin",
+        "loratadine",
+        "tums",
+        "benadryl",
+        "otc",
+        "over the counter",
+        "medicine",
+        "medication",
+        "pharmacy",
+        "prescription",
+        "rx",
+        "doctor",
+        "clinic",
+        "provider",
+        "mri",
+        "scan",
+        "imaging",
+        "radiology",
+        "caregiver",
+        "daughter",
+        "son",
+        "reminder",
+        "dose",
+    ]
+    return not any(term in normalized for term in new_intent_terms)
+
+
+def _direct_current_intent(text: str) -> dict[str, str] | None:
+    decision = triage_route(_message_text(text))
+    route = decision["route"]
+    if route == "clarify":
+        return None
+    if route == APPOINTMENT_AGENT_NAME and _is_generic_saved_result_followup(text):
+        return None
+    return decision
+
+
+def _llm_triage_decision(sender: str, text: str, session: OrchestratorSession) -> dict[str, str] | None:
+    prompt = (
+        "You are CareLoop's intent router. Classify the current user message into exactly one route. "
+        "Prefer the current message over old context unless the current message is clearly a follow-up. "
+        "Routes: careloop-prescription-explainer, careloop-pharmacy-assistant, "
+        "careloop-appointment-assistant, careloop-caregiver-notifier, careloop-adherence, "
+        "careloop-orchestrator, clarify. "
+        "Use careloop-pharmacy-assistant for OTC medicine search/order/price/location questions, "
+        "including Tylenol, Advil, Claritin, allergy medicine, pain medicine, pharmacy, or where to buy medicine. "
+        "Use careloop-appointment-assistant for doctors, clinics, appointments, MRI, imaging, scans, or booking care. "
+        "Use careloop-caregiver-notifier for drafting/telling/texting a family member or caregiver. "
+        "Return only compact JSON with keys route, confidence, rationale."
+    )
+    context = {
+        "current_message": _message_text(text),
+        "last_route": session.last_route,
+        "last_user_text": session.last_text,
+        "has_saved_appointment_result": session.last_appointment_search is not None,
+        "has_saved_otc_result": session.last_otc_order is not None,
+    }
+    content = asi_chat_completion(
+        system_prompt=prompt,
+        user_prompt=json.dumps(context),
+        session_id=f"careloop-orchestrator-triage-{sender}",
+        max_tokens=160,
+        temperature=0,
+    )
+    if not content:
+        return None
+    try:
+        start = content.find("{")
+        end = content.rfind("}")
+        payload = json.loads(content[start : end + 1] if start >= 0 and end >= start else content)
+    except Exception:
+        return None
+    route = str(payload.get("route", "")).strip()
+    if route not in ALLOWED_ROUTES or route == "clarify":
+        return None
+    return {
+        "route": route,
+        "confidence": str(payload.get("confidence") or "medium"),
+        "rationale": str(payload.get("rationale") or "ASI:One classified the current user intent."),
+    }
 
 
 def _is_short_followup(text: str) -> bool:
@@ -608,47 +710,44 @@ def _complete_paid_work(pending: PendingOrchestratorPayment, session: Orchestrat
     )
 
 
-async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> str | None:
-    session = _session(sender)
-    if _is_greeting_or_help(text):
-        return _intro_message()
-    if _is_timeline_request(text):
-        return _format_timeline(session)
-    if _is_caregiver_message_request(text):
-        request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
-        result = notify_caregiver(request)
-        session.last_route = "careloop-caregiver-notifier"
-        session.last_text = _message_text(text)
-        _add_timeline(session, "Triage route: careloop-caregiver-notifier (high)")
-        for event in result.timeline_events or []:
-            _add_timeline(session, event)
-        return _format_caregiver_draft(result)
-    if _is_result_followup(text):
-        saved_answer = _answer_saved_followup(session, text)
-        if saved_answer:
-            return saved_answer
-
-    emergency_reason = triage_emergency_reason(text)
-    if emergency_reason:
-        _add_timeline(session, f"Emergency stop: {emergency_reason}")
-        return (
-            f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
-            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
-        )
-
-    combined_text = f"{session.last_text}\nFollow-up detail: {text}" if session.last_text and _is_short_followup(text) else text
-    decision = triage_route(combined_text)
+async def _route_decision(
+    ctx: Context,
+    sender: str,
+    session: OrchestratorSession,
+    route_text: str,
+    decision: dict[str, str],
+) -> str | None:
     route = decision["route"]
     session.last_route = route
-    session.last_text = combined_text
+    session.last_text = route_text
     _add_timeline(session, f"Triage route: {route} ({decision['confidence']})")
 
-    request = CareRequest(case_id=session.case_id, user_id=sender, text=combined_text)
+    request = CareRequest(case_id=session.case_id, user_id=sender, text=route_text)
     if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
-        if ctx is None:
-            return _paid_handoff(route, combined_text, session, decision["rationale"])
         return await _begin_paid_work(ctx, sender, route, request, session)
 
+    return _complete_local_route(session, route, request)
+
+
+def _route_decision_preview(
+    sender: str,
+    session: OrchestratorSession,
+    route_text: str,
+    decision: dict[str, str],
+) -> str:
+    route = decision["route"]
+    session.last_route = route
+    session.last_text = route_text
+    _add_timeline(session, f"Triage route: {route} ({decision['confidence']})")
+
+    request = CareRequest(case_id=session.case_id, user_id=sender, text=route_text)
+    if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
+        return _paid_handoff(route, route_text, session, decision["rationale"])
+
+    return _complete_local_route(session, route, request)
+
+
+def _complete_local_route(session: OrchestratorSession, route: str, request: CareRequest) -> str:
     if route == "careloop-orchestrator":
         _add_timeline(session, "Prescription-readiness flow held for orchestrator context")
         return (
@@ -673,6 +772,50 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         f"Next actions:\n{next_actions}\n\n"
         f"{_format_timeline(session)}"
     )
+
+
+async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> str | None:
+    session = _session(sender)
+    if _is_greeting_or_help(text):
+        return _intro_message()
+    if _is_timeline_request(text):
+        return _format_timeline(session)
+    if _is_caregiver_message_request(text):
+        request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
+        result = notify_caregiver(request)
+        session.last_route = "careloop-caregiver-notifier"
+        session.last_text = _message_text(text)
+        _add_timeline(session, "Triage route: careloop-caregiver-notifier (high)")
+        for event in result.timeline_events or []:
+            _add_timeline(session, event)
+        return _format_caregiver_draft(result)
+    direct_decision = _direct_current_intent(text)
+    if direct_decision:
+        if ctx is None:
+            return _route_decision_preview(sender, session, _message_text(text), direct_decision)
+        return await _route_decision(ctx, sender, session, _message_text(text), direct_decision)
+    if _is_result_followup(text):
+        saved_answer = _answer_saved_followup(session, text)
+        if saved_answer:
+            return saved_answer
+
+    emergency_reason = triage_emergency_reason(text)
+    if emergency_reason:
+        _add_timeline(session, f"Emergency stop: {emergency_reason}")
+        return (
+            f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
+            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
+        )
+
+    combined_text = f"{session.last_text}\nFollow-up detail: {text}" if session.last_text and _is_short_followup(text) else text
+    decision = triage_route(combined_text)
+    if decision["route"] == "clarify" and ctx is not None:
+        llm_decision = _llm_triage_decision(sender, text, session)
+        if llm_decision:
+            return await _route_decision(ctx, sender, session, _message_text(text), llm_decision)
+    if ctx is None:
+        return _route_decision_preview(sender, session, combined_text, decision)
+    return await _route_decision(ctx, sender, session, combined_text, decision)
 
 
 def _orchestrator_answer_preview(sender: str, text: str) -> str:
@@ -690,6 +833,9 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
         for event in result.timeline_events or []:
             _add_timeline(session, event)
         return _format_caregiver_draft(result)
+    direct_decision = _direct_current_intent(text)
+    if direct_decision:
+        return _route_decision_preview(sender, session, _message_text(text), direct_decision)
     if _is_result_followup(text):
         saved_answer = _answer_saved_followup(session, text)
         if saved_answer:
@@ -705,39 +851,7 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
 
     combined_text = f"{session.last_text}\nFollow-up detail: {text}" if session.last_text and _is_short_followup(text) else text
     decision = triage_route(combined_text)
-    route = decision["route"]
-    session.last_route = route
-    session.last_text = combined_text
-    _add_timeline(session, f"Triage route: {route} ({decision['confidence']})")
-
-    request = CareRequest(case_id=session.case_id, user_id=sender, text=combined_text)
-    if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
-        return _paid_handoff(route, combined_text, session, decision["rationale"])
-
-    if route == "careloop-orchestrator":
-        _add_timeline(session, "Prescription-readiness flow held for orchestrator context")
-        return (
-            "CareLoop can coordinate prescription readiness, but the standalone prescription status connector is still mocked.\n\n"
-            "For the demo, I’ll keep this as an orchestrator-owned timeline item instead of asking the older adult to know hidden e-prescription details."
-        )
-
-    if route == "clarify":
-        _add_timeline(session, "Clarification requested")
-        return (
-            "I need one detail before coordinating this.\n\n"
-            "Is this about a prescription, OTC medicine, an appointment, a caregiver update, or a medication reminder?"
-        )
-
-    result = _local_result(route, request)
-    for event in result.timeline_events or []:
-        _add_timeline(session, event)
-    next_actions = "\n".join(f"- {action}" for action in result.next_actions)
-    return (
-        f"CareLoop handled this with {_specialist_handle(route)}.\n\n"
-        f"{result.summary}\n\n"
-        f"Next actions:\n{next_actions}\n\n"
-        f"{_format_timeline(session)}"
-    )
+    return _route_decision_preview(sender, session, combined_text, decision)
 
 
 def orchestrator_chat_response(ctx: Context, sender: str, text: str) -> str | None:
