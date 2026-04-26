@@ -1,4 +1,5 @@
 import os
+import re
 
 from uagents import Context, Protocol
 from uagents_core.contrib.protocols.payment import (
@@ -14,19 +15,15 @@ from chat_protocol import create_chat_protocol
 from config import create_careloop_agent, env_int
 from domain import (
     build_otc_order_quote,
-    build_pharmacy_fulfillment_status,
     format_otc_order_preview,
-    format_pharmacy_fulfillment_preview,
     is_otc_order_intent,
+    is_pharmacy_status_intent,
     make_case_id,
     otc_order_paid_result,
     otc_order_unpaid_result,
-    pharmacy_monitoring_result,
-    pharmacy_status_update_result,
-    pharmacy_unpaid_result,
     result_to_text,
 )
-from models import CareRequest, CareResult, PharmacyFulfillmentStatus, PharmacyOrderQuote
+from models import CareRequest, CareResult, PharmacyOrderQuote
 
 
 AGENT_NAME = "careloop-pharmacy-assistant"
@@ -45,27 +42,33 @@ agent = create_careloop_agent(
     seed_env="PHARMACY_ASSISTANT_AGENT_SEED",
     default_seed="careloop pharmacy options seed phrase change me",
     description=(
-        "CareLoop Pharmacy Assistant handles pharmacy tasks, starting with doctor-sent "
-        "prescription status checks and paid FET monitoring, with OTC ordering planned next."
+        "CareLoop Pharmacy Assistant recommends and prepares over-the-counter medicine "
+        "orders with FET payment and checkout handoff."
     ),
 )
 
 care_proto = Protocol(name="CareLoopPharmacyAssistantProtocol", version="0.1.0")
 payment_proto = Protocol(spec=payment_protocol_spec, role="seller")
-pending_fulfillments: dict[str, tuple[str, CareRequest, PharmacyFulfillmentStatus]] = {}
 pending_orders: dict[str, tuple[str, CareRequest, PharmacyOrderQuote]] = {}
-active_monitors: dict[str, tuple[str, CareRequest, int]] = {}
 
 
 def _context_from_chat_text(text: str) -> dict[str, str]:
     normalized = text.lower()
     preference = "delivery" if "deliver" in normalized or "delivery" in normalized else "pickup"
     context = {"location": "Los Angeles, CA", "preference": preference}
-    for marker in ["pharmacy:", "sent to:", "at pharmacy:"]:
+    for marker in ["address:", "near:", "location:"]:
         if marker in normalized:
             value = text[normalized.index(marker) + len(marker):].splitlines()[0].strip(" .")
             if value:
-                context["pharmacy_name"] = value
+                context["address"] = value
+    if "address" not in context:
+        place_match = re.search(
+            r"\b(?:near|around|in|to)\s+([A-Za-z][A-Za-z .,-]{2,60}?)(?:\s+and\s+|\s+for\s+|\s+with\s+|[.!?]|$)",
+            text,
+            re.IGNORECASE,
+        )
+        if place_match:
+            context["address"] = place_match.group(1).strip(" .,")
     return context
 
 
@@ -73,11 +76,17 @@ def pharmacy_chat_response(ctx: Context, sender: str, text: str) -> str:
     normalized = " ".join(text.lower().split())
     if normalized in {"hi", "hello", "hey", "help", "what can you do"}:
         return (
-            "Hi, I’m CareLoop’s pharmacy assistant. Ask me if your pharmacy has your "
-            "prescription ready, or ask me to order an over-the-counter medicine.\n\n"
+            "Hi, I’m CareLoop’s OTC pharmacy assistant. Tell me what symptom or OTC "
+            "medicine you need and your address area, and I’ll recommend an option and prepare checkout.\n\n"
             "Examples:\n"
-            "`Is my prescription ready at CVS Westwood?`\n"
-            "`Order Tylenol for delivery.`"
+            "`Find the best allergy medicine near Westwood.`\n"
+            "`Order Tylenol for delivery to Santa Monica.`"
+        )
+
+    if is_pharmacy_status_intent(text):
+        return (
+            "I only handle over-the-counter medicine recommendations and orders. "
+            "Prescription status belongs in the CareLoop orchestrator flow, where it can use the patient's care context."
         )
 
     request = CareRequest(
@@ -86,51 +95,40 @@ def pharmacy_chat_response(ctx: Context, sender: str, text: str) -> str:
         text=text,
         context=_context_from_chat_text(text),
     )
-    if is_otc_order_intent(text):
-        order = build_otc_order_quote(request)
-        return format_otc_order_preview(order)
 
-    fulfillment = build_pharmacy_fulfillment_status(request)
-    return format_pharmacy_fulfillment_preview(fulfillment)
+    if not is_otc_order_intent(text):
+        return (
+            "I can help with over-the-counter medicine only. Try asking something like "
+            "`Find the best allergy medicine near Westwood` or `Order Tylenol for delivery`."
+        )
+
+    order = build_otc_order_quote(request)
+    return format_otc_order_preview(order)
 
 
 @care_proto.on_message(CareRequest)
 async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
-    if is_otc_order_intent(msg.text):
-        order = build_otc_order_quote(msg)
-        quote = order.payment_quote
-        pending_orders[quote.reference] = (sender, msg, order)
-        ctx.logger.info(f"{AGENT_NAME}: requesting {quote.amount} {quote.currency} for OTC order from {sender}")
+    if not is_otc_order_intent(msg.text):
         await ctx.send(
             sender,
-            RequestPayment(
-                accepted_funds=[
-                    Funds(
-                        amount=quote.amount,
-                        currency=quote.currency,
-                        payment_method=quote.payment_method,
-                    )
+            CareResult(
+                case_id=msg.case_id,
+                agent_name=AGENT_NAME,
+                status="unsupported_intent",
+                summary="This specialist only handles over-the-counter medicine recommendations and orders.",
+                next_actions=[
+                    "Route prescription status requests to the CareLoop orchestrator.",
+                    "Ask this agent for OTC medicine by symptom, medicine name, and address area.",
                 ],
-                recipient=ctx.agent.address,
-                deadline_seconds=300,
-                reference=quote.reference,
-                description=f"{quote.service_name} service fee",
-                metadata={
-                    "case_id": quote.case_id,
-                    "agent": AGENT_NAME,
-                    "service_name": quote.service_name,
-                    "product": order.product.name,
-                    "provider": order.product.provider,
-                },
+                timeline_events=["Unsupported pharmacy-assistant intent"],
             ),
         )
         return
 
-    fulfillment = build_pharmacy_fulfillment_status(msg)
-    quote = fulfillment.payment_quote
-    pending_fulfillments[quote.reference] = (sender, msg, fulfillment)
-    ctx.logger.info(f"{AGENT_NAME}: requesting {quote.amount} {quote.currency} from {sender}")
-
+    order = build_otc_order_quote(msg)
+    quote = order.payment_quote
+    pending_orders[quote.reference] = (sender, msg, order)
+    ctx.logger.info(f"{AGENT_NAME}: requesting {quote.amount} {quote.currency} for OTC order from {sender}")
     await ctx.send(
         sender,
         RequestPayment(
@@ -144,13 +142,13 @@ async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
             recipient=ctx.agent.address,
             deadline_seconds=300,
             reference=quote.reference,
-            description=f"{quote.service_name} active status monitoring fee",
+            description=f"{quote.service_name} service fee",
             metadata={
                 "case_id": quote.case_id,
                 "agent": AGENT_NAME,
                 "service_name": quote.service_name,
-                "medication": fulfillment.medication,
-                "pharmacy_name": fulfillment.pharmacy_name,
+                "product": order.product.name,
+                "provider": order.product.provider,
             },
         ),
     )
@@ -168,20 +166,8 @@ async def handle_payment_commit(ctx: Context, sender: str, msg: CommitPayment):
         ctx.logger.info(f"{AGENT_NAME}: OTC order payment completed for {reference}")
         return
 
-    pending = pending_fulfillments.pop(reference, None)
-    if pending is None:
-        ctx.logger.warning(f"{AGENT_NAME}: unknown payment reference {reference}")
-        await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
-        return
-
-    original_sender, request, fulfillment = pending
-    result = pharmacy_monitoring_result(request, fulfillment)
+    ctx.logger.warning(f"{AGENT_NAME}: unknown payment reference {reference}")
     await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
-    await ctx.send(original_sender, result)
-    if not fulfillment.status.startswith("ready"):
-        active_monitors[reference] = (original_sender, request, 0)
-        ctx.logger.info(f"{AGENT_NAME}: active monitor started for {reference}")
-    ctx.logger.info(f"{AGENT_NAME}: payment completed for {reference}")
 
 
 @payment_proto.on_message(RejectPayment)
@@ -201,22 +187,7 @@ async def handle_payment_reject(ctx: Context, sender: str, msg: RejectPayment):
         ctx.logger.info(f"{AGENT_NAME}: OTC order payment rejected for {matching_order_reference}: {reason}")
         return
 
-    matching_reference = next(
-        (
-            reference
-            for reference, (pending_sender, _, _) in pending_fulfillments.items()
-            if pending_sender == sender
-        ),
-        None,
-    )
-    if matching_reference is None:
-        ctx.logger.warning(f"{AGENT_NAME}: reject from {sender} had no pending request")
-        return
-
-    _, request, _ = pending_fulfillments.pop(matching_reference)
-    reason = msg.reason or "buyer rejected payment"
-    await ctx.send(sender, pharmacy_unpaid_result(request, reason))
-    ctx.logger.info(f"{AGENT_NAME}: payment rejected for {matching_reference}: {reason}")
+    ctx.logger.warning(f"{AGENT_NAME}: reject from {sender} had no pending request")
 
 
 @care_proto.on_message(CareResult)
@@ -228,24 +199,6 @@ async def handle_care_result(ctx: Context, sender: str, msg: CareResult):
 async def startup(ctx: Context):
     ctx.logger.info(f"{AGENT_NAME} address: {ctx.agent.address}")
     ctx.logger.info("OmegaClaw skill target: CareLoop Pharmacy Assistant")
-
-
-@agent.on_interval(period=30.0)
-async def check_active_monitors(ctx: Context):
-    completed: list[str] = []
-    for reference, (recipient, request, tick) in list(active_monitors.items()):
-        next_tick = tick + 1
-        status = build_pharmacy_fulfillment_status(request, monitor_tick=next_tick)
-        active_monitors[reference] = (recipient, request, next_tick)
-        if status.status.startswith("ready") or status.status == "action_needed":
-            await ctx.send(recipient, pharmacy_status_update_result(request, status))
-            completed.append(reference)
-            ctx.logger.info(f"{AGENT_NAME}: monitor {reference} sent terminal update {status.status}")
-        else:
-            ctx.logger.info(f"{AGENT_NAME}: monitor {reference} still {status.status}")
-
-    for reference in completed:
-        active_monitors.pop(reference, None)
 
 
 agent.include(create_chat_protocol(AGENT_NAME, pharmacy_chat_response), publish_manifest=True)

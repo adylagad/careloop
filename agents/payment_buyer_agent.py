@@ -19,7 +19,7 @@ from models import CareRequest, CareResult
 AGENT_NAME = "careloop-payment-buyer-demo"
 PORT = env_int("PAYMENT_BUYER_AGENT_PORT", 8017)
 BUYER_MODE = os.getenv("PAYMENT_BUYER_MODE", "commit").lower()
-BUYER_TASK = os.getenv("PAYMENT_BUYER_TASK", "status").lower()
+BUYER_TASK = os.getenv("PAYMENT_BUYER_TASK", "otc_order").lower()
 PHARMACY_AGENT_ADDRESS = (
     os.getenv("PHARMACY_ASSISTANT_AGENT_ADDRESS")
     or os.getenv("PRESCRIPTION_STATUS_AGENT_ADDRESS")
@@ -85,16 +85,8 @@ async def handle_care_result(ctx: Context, sender: str, msg: CareResult):
 async def startup(ctx: Context):
     ctx.logger.info(f"{AGENT_NAME} address: {ctx.agent.address}")
     if PHARMACY_AGENT_ADDRESS:
-        if BUYER_TASK == "otc_order":
-            text = "Order Tylenol for delivery"
-            context = {"location": "Los Angeles, CA", "preference": "delivery"}
-        else:
-            text = "Keep checking whether my prescription is ready at CVS Westwood for pickup."
-            context = {
-                "location": "Los Angeles, CA",
-                "preference": "pickup",
-                "pharmacy_name": "CVS Pharmacy - Westwood Blvd",
-            }
+        text = "Find the best allergy medicine near Westwood and order it for delivery."
+        context = {"location": "Westwood, Los Angeles, CA", "preference": "delivery"}
         await ctx.send(
             PHARMACY_AGENT_ADDRESS,
             CareRequest(

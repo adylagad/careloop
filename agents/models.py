@@ -78,6 +78,7 @@ class PharmacyFulfillmentStatus(Model):
 
 class OTCProduct(Model):
     name: str
+    category: str
     active_ingredient: str
     strength: str
     package_size: str
@@ -85,14 +86,19 @@ class OTCProduct(Model):
     availability: str
     provider: str
     checkout_url: str
+    fit_score: int
+    reason: str
     safety_note: str
 
 
 class PharmacyOrderQuote(Model):
     case_id: str
     product: OTCProduct
+    alternatives: list[OTCProduct]
     quantity: int
     subtotal_usd: str
     fulfillment_method: str
+    address_hint: str
+    user_need: str
     status: str
     payment_quote: PaymentQuote

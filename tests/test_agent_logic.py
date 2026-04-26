@@ -16,6 +16,7 @@ from domain import (  # noqa: E402
     explain_prescription,
     format_otc_order_preview,
     is_otc_order_intent,
+    is_pharmacy_status_intent,
     otc_order_paid_result,
     orchestrate_care,
     pharmacy_monitoring_result,
@@ -87,17 +88,25 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(status.status, "in_progress")
 
     def test_pharmacy_assistant_handles_otc_order_quote(self):
-        request = self.make_request("Order Tylenol for delivery")
+        request = self.make_request(
+            "Find the best allergy medicine near Westwood and order it for delivery",
+            {"location": "Westwood, Los Angeles, CA", "preference": "delivery"},
+        )
         order = build_otc_order_quote(request)
         preview = format_otc_order_preview(order)
         paid = otc_order_paid_result(request, order)
 
         self.assertTrue(is_otc_order_intent(request.text))
-        self.assertEqual(order.product.active_ingredient, "Acetaminophen")
+        self.assertEqual(order.product.active_ingredient, "Loratadine")
         self.assertEqual(order.payment_quote.currency, "FET")
+        self.assertIn("Other options considered", preview)
         self.assertIn("Checkout handoff", preview)
         self.assertEqual(paid.status, "order_ready_for_checkout")
         self.assertIn("https://pharmacy.amazon.com", paid.summary)
+
+    def test_pharmacy_assistant_separates_prescription_status_intent(self):
+        self.assertTrue(is_pharmacy_status_intent("Is my prescription ready at CVS Westwood?"))
+        self.assertFalse(is_otc_order_intent("Is my prescription ready at CVS Westwood?"))
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))

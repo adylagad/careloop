@@ -159,7 +159,19 @@ def _infer_pharmacy_name(text: str) -> str:
 
 def is_otc_order_intent(text: str) -> bool:
     normalized = normalize_text(text)
-    order_terms = ["order", "buy", "purchase", "checkout", "add to cart", "ship"]
+    order_terms = [
+        "order",
+        "buy",
+        "purchase",
+        "checkout",
+        "add to cart",
+        "ship",
+        "recommend",
+        "find",
+        "best",
+        "need something",
+        "what should i get",
+    ]
     otc_terms = [
         "tylenol",
         "acetaminophen",
@@ -173,8 +185,24 @@ def is_otc_order_intent(text: str) -> bool:
         "diphenhydramine",
         "otc",
         "over the counter",
+        "pain",
+        "fever",
+        "headache",
+        "allergy",
+        "allergies",
+        "heartburn",
+        "acid",
+        "indigestion",
     ]
     return any(term in normalized for term in order_terms) and any(term in normalized for term in otc_terms)
+
+
+def is_pharmacy_status_intent(text: str) -> bool:
+    normalized = normalize_text(text)
+    return "prescription" in normalized and any(
+        term in normalized
+        for term in ["ready", "status", "pickup", "pick up", "pharmacy has", "sent"]
+    )
 
 
 def _amazon_pharmacy_url(asin: str) -> str:
@@ -185,6 +213,7 @@ def _mock_otc_catalog() -> list[OTCProduct]:
     return [
         OTCProduct(
             name="Tylenol Extra Strength",
+            category="pain_or_fever",
             active_ingredient="Acetaminophen",
             strength="500 mg",
             package_size="100 tablets",
@@ -192,10 +221,13 @@ def _mock_otc_catalog() -> list[OTCProduct]:
             availability="Available through Amazon Pharmacy checkout",
             provider="Amazon Pharmacy",
             checkout_url=_amazon_pharmacy_url("B08429LBJH"),
+            fit_score=94,
+            reason="Good first-line OTC option for many adults with pain or fever when NSAIDs are a concern.",
             safety_note="Do not exceed the label maximum. Avoid combining with other acetaminophen-containing products.",
         ),
         OTCProduct(
             name="Advil",
+            category="pain_or_inflammation",
             active_ingredient="Ibuprofen",
             strength="200 mg",
             package_size="100 tablets",
@@ -203,10 +235,13 @@ def _mock_otc_catalog() -> list[OTCProduct]:
             availability="Available through Amazon Pharmacy checkout",
             provider="Amazon Pharmacy",
             checkout_url=_amazon_pharmacy_url("B08429R6T7"),
+            fit_score=88,
+            reason="Useful for pain with inflammation, if the user can safely take NSAIDs.",
             safety_note="Ask a clinician before use if the patient has stomach bleeding risk, kidney disease, or takes blood thinners.",
         ),
         OTCProduct(
             name="Basic Care Loratadine",
+            category="allergy",
             active_ingredient="Loratadine",
             strength="10 mg",
             package_size="300 tablets",
@@ -214,10 +249,13 @@ def _mock_otc_catalog() -> list[OTCProduct]:
             availability="Available through Amazon Pharmacy checkout",
             provider="Amazon Pharmacy",
             checkout_url=_amazon_pharmacy_url("B09N2SHGBT"),
+            fit_score=92,
+            reason="Non-drowsy once-daily allergy option for sneezing, runny nose, or itchy eyes.",
             safety_note="Use only as directed on the label. Ask a pharmacist before combining with other allergy medicines.",
         ),
         OTCProduct(
             name="Tums Antacid",
+            category="heartburn",
             active_ingredient="Calcium carbonate",
             strength="assorted strengths",
             package_size="search result",
@@ -225,23 +263,38 @@ def _mock_otc_catalog() -> list[OTCProduct]:
             availability="Amazon checkout search handoff",
             provider="Amazon",
             checkout_url="https://www.amazon.com/s?k=Tums+antacid+tablets",
+            fit_score=86,
+            reason="Fast OTC antacid option for occasional heartburn or indigestion.",
             safety_note="Ask a pharmacist before use if the patient has kidney disease or takes medicines that interact with calcium.",
         ),
     ]
 
 
-def _select_otc_product(text: str) -> OTCProduct:
+def _rank_otc_products(text: str) -> list[OTCProduct]:
     normalized = normalize_text(text)
     catalog = _mock_otc_catalog()
-    if "tylenol" in normalized or "acetaminophen" in normalized:
-        return catalog[0]
-    if "advil" in normalized or "ibuprofen" in normalized:
-        return catalog[1]
-    if "claritin" in normalized or "loratadine" in normalized:
-        return catalog[2]
-    if "tums" in normalized or "antacid" in normalized:
-        return catalog[3]
-    return catalog[0]
+    category_scores = {
+        "pain_or_fever": 0,
+        "pain_or_inflammation": 0,
+        "allergy": 0,
+        "heartburn": 0,
+    }
+    if any(term in normalized for term in ["tylenol", "acetaminophen", "fever", "headache"]):
+        category_scores["pain_or_fever"] += 30
+    if any(term in normalized for term in ["advil", "ibuprofen", "inflammation", "swelling"]):
+        category_scores["pain_or_inflammation"] += 30
+    if any(term in normalized for term in ["pain", "ache", "aches"]):
+        category_scores["pain_or_fever"] += 20
+        category_scores["pain_or_inflammation"] += 15
+    if any(term in normalized for term in ["claritin", "loratadine", "allergy", "allergies", "sneezing"]):
+        category_scores["allergy"] += 35
+    if any(term in normalized for term in ["tums", "antacid", "heartburn", "acid", "indigestion"]):
+        category_scores["heartburn"] += 35
+
+    def score(product: OTCProduct) -> int:
+        return product.fit_score + category_scores.get(product.category, 0)
+
+    return sorted(catalog, key=score, reverse=True)
 
 
 def _quantity_from_text(text: str) -> int:
@@ -260,13 +313,16 @@ def _usd_to_float(value: str) -> float:
 
 
 def build_otc_order_quote(request: CareRequest) -> PharmacyOrderQuote:
-    product = _select_otc_product(request.text)
+    ranked = _rank_otc_products(request.text)
+    product = ranked[0]
     quantity = _quantity_from_text(request.text)
     subtotal = _usd_to_float(product.unit_price_usd) * quantity
+    address_hint = value_from_context(request, "address", value_from_context(request, "location", "Los Angeles, CA"))
+    preference = value_from_context(request, "preference", "delivery")
     reference = f"careloop-otc-order-{request.case_id}-{uuid4().hex[:8]}"
     quote = PaymentQuote(
         case_id=request.case_id,
-        service_name="CareLoop OTC Order",
+        service_name="CareLoop OTC Recommendation and Order",
         amount=OTC_ORDER_SERVICE_FEE_FET,
         reference=reference,
     )
@@ -274,28 +330,50 @@ def build_otc_order_quote(request: CareRequest) -> PharmacyOrderQuote:
     return PharmacyOrderQuote(
         case_id=request.case_id,
         product=product,
+        alternatives=ranked[1:3],
         quantity=quantity,
         subtotal_usd=f"${subtotal:.2f}",
-        fulfillment_method="Amazon checkout handoff",
+        fulfillment_method="Amazon checkout handoff" if preference == "delivery" else "Amazon/nearby checkout handoff",
+        address_hint=address_hint,
+        user_need=_infer_otc_need(request.text),
         status="quote_ready",
         payment_quote=quote,
     )
 
 
+def _infer_otc_need(text: str) -> str:
+    normalized = normalize_text(text)
+    if any(term in normalized for term in ["allergy", "allergies", "sneezing"]):
+        return "allergy relief"
+    if any(term in normalized for term in ["heartburn", "acid", "indigestion", "antacid"]):
+        return "heartburn or indigestion relief"
+    if any(term in normalized for term in ["fever", "headache", "pain", "ache"]):
+        return "pain or fever relief"
+    return "OTC medicine request"
+
+
 def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
+    alternatives = "\n".join(
+        f"- {item.name}: {item.reason} ({item.unit_price_usd})"
+        for item in order.alternatives
+    )
     return (
         "CareLoop Pharmacy Assistant\n\n"
-        "OTC order quote:\n"
+        f"Need: {order.user_need}\n"
+        f"Address area: {order.address_hint}\n\n"
+        "Recommended OTC option:\n"
         f"- Item: {order.product.name} ({order.product.active_ingredient} {order.product.strength})\n"
         f"- Package: {order.product.package_size}\n"
         f"- Quantity: {order.quantity}\n"
         f"- Estimated product subtotal: {order.subtotal_usd}\n"
         f"- Provider: {order.product.provider}\n"
         f"- Availability: {order.product.availability}\n\n"
+        f"Why this option: {order.product.reason}\n\n"
+        f"Other options considered:\n{alternatives}\n\n"
         f"Checkout handoff: {order.product.checkout_url}\n\n"
         f"CareLoop service fee: {order.payment_quote.amount} FET via {order.payment_quote.payment_method}\n"
         f"Payment reference: {order.payment_quote.reference}\n\n"
-        "After FET payment, I can create the CareLoop order record and return the checkout handoff. "
+        "After FET payment, I create the CareLoop order record and return the checkout handoff. "
         "The final product purchase, shipping address, and card payment happen on the provider checkout page.\n\n"
         f"Safety note: {order.product.safety_note}"
     )

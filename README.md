@@ -23,9 +23,9 @@ python main.py               # run all CareLoop specialists together
 The repo currently focuses only on Fetch.ai/uAgents work. No frontend or backend service
 layer is included yet.
 
-- `careloop-pharmacy-assistant` — broad pharmacy specialist and first OmegaClaw target.
-  It starts with doctor-sent prescription readiness checks, paid FET monitoring, and
-  readiness updates. The same agent will own OTC medicine ordering next.
+- `careloop-pharmacy-assistant` — OTC pharmacy ordering specialist and first OmegaClaw
+  target. It recommends over-the-counter medicine based on the user's query/address,
+  charges a FET service fee, creates an order record, and returns checkout handoff.
 - `careloop-prescription-explainer` — senior-friendly mocked prescription explanations.
 - `careloop-appointment-booking` — mocked doctor search, booking, and prep checklist.
 - `careloop-caregiver-notifier` — SMS/email-style caregiver updates.
@@ -36,35 +36,30 @@ layer is included yet.
 For local payment testing, run `payment_buyer_agent.py` as a demo buyer after setting
 `PHARMACY_ASSISTANT_AGENT_ADDRESS` to the pharmacy assistant address. Set
 `PAYMENT_BUYER_MODE=reject` to test rejection handling. The buyer asks the pharmacy
-assistant to keep checking a doctor-sent prescription until it is ready for pickup.
+assistant to recommend and prepare an OTC delivery order.
 
 ## Pharmacy Assistant Agent
 
-`careloop-pharmacy-assistant` is framed as the one agent for pharmacy-related work. The
-patient does not need to call the pharmacy and does not need to know the medication name
-before pickup. The agent uses patient/pharmacy context to look up a mocked pending
-prescription, then checks a mocked pharmacy status adapter for states such as received,
-in progress, delayed, action needed, ready for pickup, or ready for delivery. One-time
-ASI:One chat checks are free previews; paid uAgent requests use the FET Payment Protocol
-to unlock active monitoring until a terminal status update is available.
-
-The same agent also handles OTC ordering. It can quote common OTC products, request a
-0.05 FET CareLoop service fee through the Payment Protocol, create an order record after
-payment, and return a provider checkout handoff. Amazon does not expose a normal public
-consumer API for fully automatic checkout, shipping, payment, and purchase confirmation,
-so the real fulfillment handoff is a safe provider checkout URL while the agent-owned
-order/payment behavior is demonstrated through FET.
+`careloop-pharmacy-assistant` is an OTC-only specialist. Prescription readiness belongs
+to the CareLoop orchestrator because it needs patient care context. This agent handles
+queries like "find the best allergy medicine near Westwood" or "order Tylenol for
+delivery." It ranks mocked OTC options, explains why the selected product fits, includes
+safety notes, requests a 0.05 FET CareLoop service fee through the Payment Protocol,
+creates an order record after payment, and returns a provider checkout handoff. Amazon
+does not expose a normal public consumer API for fully automatic checkout, shipping,
+payment, and purchase confirmation, so the real fulfillment handoff is a safe provider
+checkout URL while the agent-owned order/payment behavior is demonstrated through FET.
 
 For real-data expansion, the next adapter layer can use openFDA/RxNorm/DailyMed for
 medication reference data, OpenStreetMap for pharmacy locations, and Cost Plus Drugs or
-GoodRx-style APIs for price/formulary data. Live patient-specific readiness still needs
-mocking until a pharmacy/EHR integration is available.
+GoodRx-style APIs for price/formulary data. Orchestrator-owned prescription readiness
+still needs mocking until a pharmacy/EHR integration is available.
 
 Example ASI:One prompts:
 
 ```text
-Is my prescription ready at CVS Westwood?
-Order Tylenol for delivery.
+Find the best allergy medicine near Westwood and order it for delivery.
+Order Tylenol for delivery to Santa Monica.
 ```
 
 ## Prescription Agent Document Intake
