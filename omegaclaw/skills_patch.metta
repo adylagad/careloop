@@ -7,4 +7,4 @@
    (py-call (agentverse.careloop careloop_healthcare_request $request)))
 
 ;; 2. Add this line inside `getSkills`, under the AGENTVERSE AGENTS section:
-;; "- Coordinate elderly healthcare tasks with CareLoop on Agentverse: (careloop-healthcare string_in_quotes)"
+;; "- Coordinate elderly healthcare tasks through CareLoop Agentverse. Use this first for doctor booking, cough/fever care, prescriptions, OTC pharmacy, caregiver messages, reminders, or healthcare routing. Do not ask follow-up questions before using it unless the user explicitly asks: careloop-healthcare string"
