@@ -123,6 +123,14 @@ Write an email to my son that Mom's doctor appointment is booked tomorrow at 10:
 Urgent caregiver alert: Mom has chest pain and cannot breathe.
 ```
 
+The orchestrator can also draft a caregiver email and send it through Gmail after
+confirmation. If no recipient email is provided, it defaults to `adyhacks@gmail.com`.
+
+```text
+Write an email to my daughter saying I have a bad cough and booked an appointment.
+send it
+```
+
 ## Triage Agent
 
 `careloop-triage` is the ASI:One front door for CareLoop. It remembers recent chat

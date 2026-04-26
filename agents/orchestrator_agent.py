@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from time import time
 from typing import Any
@@ -37,6 +38,7 @@ from domain import (
     triage_request,
     triage_route,
 )
+from email_delivery import GmailDeliveryError, default_caregiver_email, gmail_missing_env, send_gmail_message
 from llm import asi_chat_completion
 from models import AppointmentSearchQuote, CareRequest, CareResult, PaymentQuote, PharmacyOrderQuote
 
@@ -83,6 +85,10 @@ class OrchestratorSession:
     last_paid_fingerprint: str | None = None
     last_appointment_search: AppointmentSearchQuote | None = None
     last_otc_order: PharmacyOrderQuote | None = None
+    last_caregiver_channel: str | None = None
+    last_caregiver_to_email: str | None = None
+    last_caregiver_subject: str | None = None
+    last_caregiver_body: str | None = None
     completed_payment_references: set[str] = field(default_factory=set)
     timeline: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time)
@@ -278,6 +284,12 @@ def _is_caregiver_message_request(text: str) -> bool:
         "let them know",
     ]
     return any(term in normalized for term in recipient_terms) and any(term in normalized for term in message_terms)
+
+
+def _is_send_caregiver_email_request(text: str) -> bool:
+    normalized = _message_text(text).lower()
+    send_terms = ["send it", "send the email", "send this email", "email it", "send now", "yes send"]
+    return any(term in normalized for term in send_terms)
 
 
 def _is_result_followup(text: str) -> bool:
@@ -648,8 +660,62 @@ def _fallback_caregiver_draft(text: str, result: CareResult, session: Orchestrat
     return _format_caregiver_draft(result)
 
 
+def _caregiver_channel(text: str) -> str:
+    normalized = _message_text(text).lower()
+    if any(term in normalized for term in ["email", "mail", "gmail"]):
+        return "email"
+    return "sms"
+
+
+def _caregiver_to_email(text: str) -> str:
+    match = re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", _message_text(text))
+    return match.group(0) if match else default_caregiver_email()
+
+
+def _parse_email_draft(raw: str, fallback_subject: str) -> tuple[str, str]:
+    subject = fallback_subject
+    body_lines: list[str] = []
+    in_body = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if body_lines:
+                body_lines.append("")
+            continue
+        if stripped.lower().startswith("subject:"):
+            subject = stripped.split(":", 1)[1].strip() or fallback_subject
+            continue
+        if stripped.lower().startswith("body:"):
+            in_body = True
+            possible_body = stripped.split(":", 1)[1].strip()
+            if possible_body:
+                body_lines.append(possible_body)
+            continue
+        if in_body or not stripped.lower().startswith(("to:", "from:")):
+            body_lines.append(stripped)
+    body = "\n".join(body_lines).strip() or raw.strip()
+    return subject, body
+
+
+def _remember_caregiver_draft(
+    session: OrchestratorSession,
+    *,
+    channel: str,
+    to_email: str,
+    subject: str,
+    body: str,
+) -> None:
+    session.last_caregiver_channel = channel
+    session.last_caregiver_to_email = to_email
+    session.last_caregiver_subject = subject
+    session.last_caregiver_body = body
+
+
 def _smart_caregiver_draft(sender: str, session: OrchestratorSession, text: str, result: CareResult) -> str:
-    channel = "email" if any(term in _message_text(text).lower() for term in ["email", "mail", "gmail"]) else "sms"
+    channel = _caregiver_channel(text)
+    to_email = _caregiver_to_email(text)
+    fallback = _fallback_caregiver_draft(text, result, session).split("\n\n", 1)[-1]
+    fallback_subject = "CareLoop update"
     llm_answer = asi_chat_completion(
         system_prompt=(
             "You write warm, concise caregiver-ready messages for older adults. "
@@ -657,7 +723,7 @@ def _smart_caregiver_draft(sender: str, session: OrchestratorSession, text: str,
             "If the user says 'I', write from the user's point of view. "
             "Use only facts provided in the user request or saved care context. "
             "Do not invent medical advice, appointment times, confirmations, or diagnoses. "
-            "If writing an email, include a short Subject line. Otherwise write a short text message. "
+            "If writing an email, return exactly a Subject line and a Body section. Otherwise write a short text message. "
             "Return only the message the caregiver should receive."
         ),
         user_prompt=(
@@ -671,8 +737,61 @@ def _smart_caregiver_draft(sender: str, session: OrchestratorSession, text: str,
         max_tokens=260,
         temperature=0.2,
     )
-    draft = llm_answer or _fallback_caregiver_draft(text, result, session).split("\n\n", 1)[-1]
-    return f"Here’s a caregiver message you can send:\n\n{draft.strip()}"
+    draft = (llm_answer or fallback).strip()
+    if channel == "email":
+        subject, body = _parse_email_draft(draft, fallback_subject)
+        _remember_caregiver_draft(
+            session,
+            channel="email",
+            to_email=to_email,
+            subject=subject,
+            body=body,
+        )
+        return (
+            f"Drafted email to {to_email}:\n\n"
+            f"Subject: {subject}\n\n"
+            f"{body}\n\n"
+            "Say `send it` to send this with Gmail."
+        )
+
+    _remember_caregiver_draft(
+        session,
+        channel="sms",
+        to_email=to_email,
+        subject=fallback_subject,
+        body=draft,
+    )
+    return f"Here’s a caregiver message you can send:\n\n{draft}"
+
+
+def _send_saved_caregiver_email(session: OrchestratorSession) -> str:
+    if not session.last_caregiver_body:
+        return "I don’t have a caregiver email draft ready yet. Ask me to write the email first."
+    if session.last_caregiver_channel != "email":
+        return "I have a text-message draft saved, not an email draft. Ask me to write it as an email first."
+
+    missing = gmail_missing_env()
+    if missing:
+        return (
+            "I drafted the email, but Gmail sending is not configured yet.\n\n"
+            f"Missing env values: {', '.join(missing)}"
+        )
+
+    try:
+        sent = send_gmail_message(
+            to_email=session.last_caregiver_to_email or default_caregiver_email(),
+            subject=session.last_caregiver_subject or "CareLoop update",
+            body=session.last_caregiver_body,
+        )
+    except GmailDeliveryError as exc:
+        return f"I could not send the Gmail message yet: {exc}"
+
+    _add_timeline(session, f"Caregiver email sent to {sent.to_email}")
+    return (
+        f"Sent the caregiver email to {sent.to_email}.\n\n"
+        f"Subject: {sent.subject}\n"
+        f"Gmail message id: {sent.message_id or 'sent'}"
+    )
 
 
 def _payment_card_content(route: str, quote: PaymentQuote) -> str:
@@ -885,6 +1004,8 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
             f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
             "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
         )
+    if _is_send_caregiver_email_request(text):
+        return _send_saved_caregiver_email(session)
     if _is_caregiver_message_request(text):
         request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
         result = notify_caregiver(request)
@@ -928,6 +1049,8 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
             f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
             "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
         )
+    if _is_send_caregiver_email_request(text):
+        return _send_saved_caregiver_email(session)
     if _is_caregiver_message_request(text):
         request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
         result = notify_caregiver(request)

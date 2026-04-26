@@ -59,6 +59,7 @@ from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat
 from triage_agent import TRIAGE_CONTEXT_BY_SENDER, triage_chat_response  # noqa: E402
 import orchestrator_agent  # noqa: E402
 from orchestrator_agent import ORCHESTRATOR_CONTEXT_BY_SENDER, OrchestratorSession, orchestrator_chat_response  # noqa: E402
+import email_delivery  # noqa: E402
 
 
 class AgentLogicTests(unittest.TestCase):
@@ -630,6 +631,58 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("booked an appointment", response)
         self.assertNotIn("can you write", response.lower())
         self.assertNotIn("CareLoop update for daughter", response)
+
+    def test_orchestrator_drafts_email_with_default_recipient(self):
+        sender = "orchestrator-caregiver-email-draft-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        with patch.object(
+            orchestrator_agent,
+            "asi_chat_completion",
+            return_value=(
+                "Subject: Appointment update\n\n"
+                "Body:\n"
+                "Hi, I wanted to let you know that I have a bad cough and booked an appointment."
+            ),
+        ):
+            response = orchestrator_chat_response(
+                None,
+                sender,
+                "write an email to my daughter saying I have a bad cough and booked an appointment",
+            )
+
+        session = ORCHESTRATOR_CONTEXT_BY_SENDER[sender]
+        self.assertIn("Drafted email to adyhacks@gmail.com", response)
+        self.assertIn("Say `send it`", response)
+        self.assertEqual(session.last_caregiver_to_email, "adyhacks@gmail.com")
+        self.assertEqual(session.last_caregiver_subject, "Appointment update")
+        self.assertIn("bad cough", session.last_caregiver_body)
+
+    def test_orchestrator_sends_saved_caregiver_email(self):
+        sender = "orchestrator-caregiver-email-send-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+        session = OrchestratorSession(case_id="careloop-test")
+        session.last_caregiver_channel = "email"
+        session.last_caregiver_to_email = "adyhacks@gmail.com"
+        session.last_caregiver_subject = "CareLoop update"
+        session.last_caregiver_body = "Hi, I booked an appointment."
+        ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = session
+
+        with patch.object(orchestrator_agent, "gmail_missing_env", return_value=[]), patch.object(
+            orchestrator_agent,
+            "send_gmail_message",
+            return_value=email_delivery.GmailSendResult(
+                message_id="gmail-123",
+                thread_id="thread-123",
+                to_email="adyhacks@gmail.com",
+                subject="CareLoop update",
+            ),
+        ) as send_mock:
+            response = orchestrator_chat_response(None, sender, "send it")
+
+        self.assertIn("Sent the caregiver email", response)
+        self.assertIn("gmail-123", response)
+        send_mock.assert_called_once()
 
     def test_orchestrator_new_otc_request_wins_over_saved_appointment_followup(self):
         sender = "orchestrator-otc-after-appointment-user"
