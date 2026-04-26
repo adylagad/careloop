@@ -148,6 +148,44 @@ that runtime to call the Agentverse agent:
 - Orchestrator address:
   `agent1qgpgqcj5sgdf35atw8fyeytr49g6tnf8s60rgp6hdm5jeen504r22ut73pf`
 
+## Future: FET Payments Inside Telegram
+
+Telegram does not natively render the ASI:One FET Pay/Reject card. That card is an
+ASI:One chat feature that understands Fetch.ai payment protocol messages. For the
+current demo, keep the polished one-click FET card in ASI:One and use Telegram for the
+OmegaClaw-style external-channel orchestration demo.
+
+If FET payment is needed directly inside Telegram later, implement one of these flows:
+
+1. Payment link flow.
+   - Bot sends a Fetch wallet/payment URL for the service fee.
+   - User pays from their wallet.
+   - Bot asks for or detects the transaction reference.
+   - CareLoop verifies payment before running the paid appointment/pharmacy search.
+   - This is the recommended hackathon-friendly Telegram path.
+
+2. Telegram Web App checkout.
+   - Bot opens a small Telegram Web App checkout page.
+   - User connects wallet and pays FET from the web view.
+   - Web app calls back into CareLoop with the payment result.
+   - This is the most polished Telegram-native path, but needs a small hosted web app.
+
+3. Manual testnet transfer.
+   - Bot shows the Dorado/testnet address and amount.
+   - User sends FET manually.
+   - Bot verifies the chain transaction or account balance.
+   - This is fastest to build, but less polished for judging.
+
+Target behavior:
+
+```text
+User asks for a paid live search in Telegram.
+CareLoop replies with the service fee and a Pay link.
+User pays FET from wallet.
+CareLoop verifies the payment.
+CareLoop runs the live search and returns the result in Telegram.
+```
+
 ## Track 2 Submission Checklist
 
 - Record Telegram conversation.
