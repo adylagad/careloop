@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / "agents"
 sys.path.insert(0, str(AGENTS))
 os.environ["BROWSER_USE_API_KEY"] = ""
+os.environ["ASI1_API_KEY"] = ""
+os.environ["ASI_ONE_API_KEY"] = ""
 
 from domain import (  # noqa: E402
     APPOINTMENT_SERVICE_FEE_FET,
@@ -602,10 +604,32 @@ class AgentLogicTests(unittest.TestCase):
         )
 
         self.assertIn("Here’s a caregiver message", response)
-        self.assertIn("daughter", response)
         self.assertIn("UCLA Health", response)
         self.assertNotIn("Use this booking/search link", response)
         self.assertNotIn("bad cough", response)
+
+    def test_orchestrator_caregiver_draft_uses_asi_one_rewrite(self):
+        sender = "orchestrator-caregiver-smart-draft-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        with patch.object(
+            orchestrator_agent,
+            "asi_chat_completion",
+            return_value=(
+                "Hi, I wanted to let you know that I have a bad cough and I booked an appointment. "
+                "Could you please check in with me later today?"
+            ),
+        ):
+            response = orchestrator_chat_response(
+                None,
+                sender,
+                "can you write a message to my daughter saying that i have a bad cough and that i have booked an appointment",
+            )
+
+        self.assertIn("bad cough", response)
+        self.assertIn("booked an appointment", response)
+        self.assertNotIn("can you write", response.lower())
+        self.assertNotIn("CareLoop update for daughter", response)
 
     def test_orchestrator_new_otc_request_wins_over_saved_appointment_followup(self):
         sender = "orchestrator-otc-after-appointment-user"

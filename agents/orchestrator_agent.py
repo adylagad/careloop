@@ -586,9 +586,93 @@ def _caregiver_context_text(session: OrchestratorSession, text: str) -> str:
     return base
 
 
+def _saved_care_context(session: OrchestratorSession) -> str:
+    if session.last_appointment_search is not None:
+        option = session.last_appointment_search.selected_option or (
+            session.last_appointment_search.options[0] if session.last_appointment_search.options else None
+        )
+        if option is not None:
+            parts = [
+                f"Appointment option: {option.provider_name}",
+                f"Location: {option.location}",
+                f"Booking link: {option.booking_url}",
+                "Status: patient is reviewing or preparing to book unless the user says it is already booked.",
+            ]
+            if option.earliest_available and option.earliest_available != "availability not published":
+                parts.append(f"Availability: {option.earliest_available}")
+            if option.phone:
+                parts.append(f"Phone: {option.phone}")
+            return "\n".join(parts)
+    if session.last_otc_order is not None:
+        order = session.last_otc_order
+        return (
+            f"Pharmacy option: {order.product.name} {order.product.strength} from {order.product.provider}\n"
+            f"Estimated total: {order.total_usd}\n"
+            f"Checkout link: {order.checkout_url}"
+        )
+    return "No saved appointment or pharmacy result."
+
+
 def _format_caregiver_draft(result: CareResult) -> str:
     draft = result.summary.split("\n\n", 1)[1] if "\n\n" in result.summary else result.summary
     return f"Here’s a caregiver message you can send:\n\n{draft}"
+
+
+def _fallback_caregiver_draft(text: str, result: CareResult, session: OrchestratorSession) -> str:
+    normalized = _message_text(text)
+    lower = normalized.lower()
+    if "daughter" in lower:
+        greeting = "Hi, just wanted to let you know"
+    elif "son" in lower:
+        greeting = "Hi, just wanted to let you know"
+    else:
+        greeting = "Hi, I wanted to share a quick CareLoop update"
+
+    fact_text = normalized
+    for marker in ["saying that", "that i", "that I"]:
+        index = fact_text.find(marker)
+        if index >= 0:
+            fact_text = fact_text[index + len(marker) :].strip()
+            if marker.lower().endswith("i"):
+                fact_text = "I " + fact_text
+            break
+    fact_text = fact_text.rstrip(".")
+    if "appointment" in lower and session.last_appointment_search is not None:
+        option = session.last_appointment_search.selected_option or (
+            session.last_appointment_search.options[0] if session.last_appointment_search.options else None
+        )
+        if option is not None and option.provider_name.lower() not in fact_text.lower():
+            fact_text = f"{fact_text} at {option.provider_name}"
+    if fact_text:
+        return f"Here’s a caregiver message you can send:\n\n{greeting} that {fact_text}. Please check in when you can."
+    return _format_caregiver_draft(result)
+
+
+def _smart_caregiver_draft(sender: str, session: OrchestratorSession, text: str, result: CareResult) -> str:
+    channel = "email" if any(term in _message_text(text).lower() for term in ["email", "mail", "gmail"]) else "sms"
+    llm_answer = asi_chat_completion(
+        system_prompt=(
+            "You write warm, concise caregiver-ready messages for older adults. "
+            "Do not copy the user's instruction. Do not say 'the patient' unless the user used that wording. "
+            "If the user says 'I', write from the user's point of view. "
+            "Use only facts provided in the user request or saved care context. "
+            "Do not invent medical advice, appointment times, confirmations, or diagnoses. "
+            "If writing an email, include a short Subject line. Otherwise write a short text message. "
+            "Return only the message the caregiver should receive."
+        ),
+        user_prompt=(
+            f"Channel: {channel}\n\n"
+            f"User request:\n{_message_text(text)}\n\n"
+            f"Saved care context:\n{_saved_care_context(session)}\n\n"
+            f"Structured fallback draft:\n{result.summary}\n\n"
+            "Write the final caregiver message now."
+        ),
+        session_id=f"careloop-orchestrator-caregiver-{sender}",
+        max_tokens=260,
+        temperature=0.2,
+    )
+    draft = llm_answer or _fallback_caregiver_draft(text, result, session).split("\n\n", 1)[-1]
+    return f"Here’s a caregiver message you can send:\n\n{draft.strip()}"
 
 
 def _payment_card_content(route: str, quote: PaymentQuote) -> str:
@@ -809,7 +893,7 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         _add_timeline(session, "Triage route: careloop-caregiver-notifier (high)")
         for event in result.timeline_events or []:
             _add_timeline(session, event)
-        return _format_caregiver_draft(result)
+        return _smart_caregiver_draft(sender, session, text, result)
     if _is_generic_saved_result_followup(text):
         saved_answer = _answer_saved_followup(session, text)
         if saved_answer:
@@ -852,7 +936,7 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
         _add_timeline(session, "Triage route: careloop-caregiver-notifier (high)")
         for event in result.timeline_events or []:
             _add_timeline(session, event)
-        return _format_caregiver_draft(result)
+        return _smart_caregiver_draft(sender, session, text, result)
     if _is_generic_saved_result_followup(text):
         saved_answer = _answer_saved_followup(session, text)
         if saved_answer:
