@@ -35,7 +35,14 @@ from domain import (  # noqa: E402
     triage_request,
 )
 from models import CareRequest, PaymentQuote, PrescriptionDocumentRequest  # noqa: E402
-from appointment_agent import APPOINTMENT_CONTEXT_BY_SENDER, appointment_chat_response  # noqa: E402
+from appointment_agent import (  # noqa: E402
+    APPOINTMENT_CONTEXT_BY_SENDER,
+    PAYMENT_REQUEST_VERSION as APPOINTMENT_PAYMENT_REQUEST_VERSION,
+    PendingAppointmentPayment,
+    _pending_requires_refresh as appointment_pending_requires_refresh,
+    _request_fingerprint as appointment_request_fingerprint,
+    appointment_chat_response,
+)
 from appointment_data import parse_browser_appointment_text  # noqa: E402
 from browser_cache import browser_cache_key, cached_browser_call  # noqa: E402
 from caregiver_agent import CAREGIVER_CONTEXT_BY_SENDER, caregiver_chat_response  # noqa: E402
@@ -338,6 +345,25 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(quote.amount, APPOINTMENT_SERVICE_FEE_FET)
         self.assertEqual(quote.payment_method, "fet_direct")
         self.assertEqual(unpaid.status, "payment_required")
+
+    def test_appointment_refreshes_old_payment_request_version(self):
+        request = self.make_request(
+            "Find a primary care doctor near USC Village",
+            {"specialty": "primary care", "location": "USC Village", "urgency": "routine"},
+        )
+        quote = build_appointment_payment_quote(request)
+        pending = PendingAppointmentPayment(
+            original_sender="appointment-legacy-user",
+            request=request,
+            quote=quote,
+            response_channel="chat",
+            request_fingerprint=appointment_request_fingerprint(request),
+            created_at=9999999999,
+            request_version="appointment-fet-direct-v1",
+        )
+
+        self.assertNotEqual(pending.request_version, APPOINTMENT_PAYMENT_REQUEST_VERSION)
+        self.assertTrue(appointment_pending_requires_refresh(pending, appointment_request_fingerprint(request)))
 
     def test_browser_cache_dedupes_equivalent_payloads(self):
         calls = {"count": 0}

@@ -60,8 +60,9 @@ care_proto = Protocol(name="CareLoopAppointmentAssistantProtocol", version="0.2.
 payment_proto = Protocol(spec=payment_protocol_spec, role="seller")
 APPOINTMENT_CONTEXT_BY_SENDER: dict[str, AppointmentSearchQuote] = {}
 MAX_APPOINTMENT_CONTEXTS = 100
-PAYMENT_EXPIRY_SECONDS = 3600
-PAYMENT_REQUEST_VERSION = "appointment-fet-direct-v1"
+PAYMENT_REQUEST_DEADLINE_SECONDS = 300
+PAYMENT_EXPIRY_SECONDS = PAYMENT_REQUEST_DEADLINE_SECONDS - 15
+PAYMENT_REQUEST_VERSION = "appointment-fet-direct-card-v2"
 
 
 @dataclass
@@ -280,7 +281,7 @@ async def _send_appointment_payment_request(ctx: Context, sender: str, quote: Pa
             )
         ],
         recipient=recipient,
-        deadline_seconds=300,
+        deadline_seconds=PAYMENT_REQUEST_DEADLINE_SECONDS,
         reference=quote.reference,
         description=f"{quote.service_name} service fee",
         metadata=metadata,
