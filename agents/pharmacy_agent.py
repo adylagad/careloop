@@ -293,28 +293,22 @@ def _fallback_followup_answer(question: str, order: PharmacyOrderQuote) -> str:
 
 
 async def _send_otc_payment_request(ctx: Context, sender: str, quote: PaymentQuote) -> None:
-    await ctx.send(
-        sender,
-        RequestPayment(
-            accepted_funds=[
-                Funds(
-                    amount=quote.amount,
-                    currency=quote.currency,
-                    payment_method=quote.payment_method,
-                )
-            ],
-            recipient=os.getenv("PHARMACY_ASSISTANT_FET_WALLET_ADDRESS", ctx.agent.address),
-            deadline_seconds=300,
-            reference=quote.reference,
-            description=f"{quote.service_name} service fee",
-            metadata={
-                "case_id": quote.case_id,
-                "agent": AGENT_NAME,
-                "service_name": quote.service_name,
-                "payment_gate": "before_live_price_search",
-            },
-        ),
+    payment_request = RequestPayment(
+        accepted_funds=[
+            Funds(
+                amount=quote.amount,
+                currency=quote.currency,
+                payment_method=quote.payment_method,
+            )
+        ],
+        recipient=ctx.agent.address,
+        deadline_seconds=300,
+        reference=quote.reference,
+        description=f"{quote.service_name} service fee",
+        metadata={},
     )
+    ctx.logger.info(f"{AGENT_NAME}: sending native FET payment request to {sender}: {payment_request}")
+    await ctx.send(sender, payment_request)
 
 
 def _answer_followup(sender: str, question: str, order: PharmacyOrderQuote) -> str:

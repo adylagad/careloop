@@ -147,7 +147,7 @@ class AgentLogicTests(unittest.TestCase):
         )
 
         self.assertIn("Service fee required", first)
-        self.assertIn("0.05 FET", first)
+        self.assertIn("0.1 FET", first)
         self.assertNotIn("Price comparison found", first)
 
     def test_pharmacy_chat_reuses_pending_payment(self):

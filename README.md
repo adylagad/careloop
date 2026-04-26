@@ -46,7 +46,7 @@ queries like "find the best allergy medicine near Westwood" or "order Tylenol fo
 delivery." It compares online prices it can verify from public quote APIs, shows nearby
 offline pickup locations from OpenStreetMap, explains where local shelf prices are not
 available from free public APIs, ranks OTC options, includes safety notes, requests a
-0.05 FET CareLoop service fee through the Payment Protocol, creates an order record
+0.1 FET CareLoop service fee through the Payment Protocol, creates an order record
 after payment, and returns a provider checkout handoff. Amazon does not expose a normal
 public consumer API for fully automatic checkout, shipping, payment, and purchase
 confirmation, so the real fulfillment handoff is a safe provider checkout URL while the

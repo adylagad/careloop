@@ -24,10 +24,10 @@ from prescription_scanner import (
 )
 
 
-PHARMACY_SERVICE_FEE_FET = "0.05"
+PHARMACY_SERVICE_FEE_FET = "0.1"
 PHARMACY_MONITOR_CHECK_MINUTES = 15
 PHARMACY_ASSISTANT_AGENT_NAME = "careloop-pharmacy-assistant"
-OTC_ORDER_SERVICE_FEE_FET = "0.05"
+OTC_ORDER_SERVICE_FEE_FET = "0.1"
 
 
 def make_case_id(prefix: str = "case") -> str:
@@ -485,7 +485,7 @@ def otc_order_unpaid_result(request: CareRequest, reason: str) -> CareResult:
         status="payment_required",
         summary=f"OTC order quote is ready, but the CareLoop service fee was not paid. Reason: {reason}",
         next_actions=[
-            "Approve the 0.05 FET service fee to create the order record.",
+            f"Approve the {OTC_ORDER_SERVICE_FEE_FET} FET service fee to create the order record.",
             "Use the checkout handoff only after reviewing the OTC label and caregiver needs.",
         ],
         timeline_events=["Payment requested for OTC order"],
@@ -730,7 +730,7 @@ def pharmacy_unpaid_result(request: CareRequest, reason: str) -> CareResult:
             f"is held until the CareLoop Pharmacy Assistant fee is paid. Reason: {reason}"
         ),
         next_actions=[
-            "Approve the 0.05 FET service fee to monitor until the prescription is ready.",
+            f"Approve the {PHARMACY_SERVICE_FEE_FET} FET service fee to monitor until the prescription is ready.",
             "Reject payment to receive only one-time pharmacy safety guidance.",
         ],
         timeline_events=["Payment requested for pharmacy monitoring"],
