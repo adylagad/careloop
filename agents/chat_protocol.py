@@ -19,7 +19,7 @@ from uagents_core.contrib.protocols.chat import (
 ChatResponder = Callable[[Context, str, str], str | Awaitable[str]]
 
 
-def create_text_chat(text: str, end_session: bool = True) -> ChatMessage:
+def create_text_chat(text: str, end_session: bool = False) -> ChatMessage:
     content = [TextContent(type="text", text=text)]
     if end_session:
         content.append(EndSessionContent(type="end-session"))

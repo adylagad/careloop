@@ -29,6 +29,7 @@ from domain import (  # noqa: E402
 )
 from models import CareRequest, PrescriptionDocumentRequest  # noqa: E402
 from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  # noqa: E402
+from pharmacy_agent import PendingOrderPayment, _load_pending_by_sender, _pending_payment_message, _request_fingerprint, _store_pending, pending_by_sender, pending_orders  # noqa: E402
 from pharmacy_data import _parse_browser_price_text  # noqa: E402
 from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat_response  # noqa: E402
 
@@ -148,6 +149,36 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("Service fee required", first)
         self.assertIn("0.05 FET", first)
         self.assertNotIn("Price comparison found", first)
+
+    def test_pharmacy_chat_reuses_pending_payment(self):
+        sender = "otc-pending-user"
+        PHARMACY_CONTEXT_BY_SENDER.pop(sender, None)
+        pending_by_sender.pop(sender, None)
+        for reference, pending in list(pending_orders.items()):
+            if pending.original_sender == sender:
+                pending_orders.pop(reference, None)
+
+        request = self.make_request(
+            "Find the best allergy medicine near Westwood and order it for delivery",
+            {"location": "Westwood, Los Angeles, CA", "preference": "delivery"},
+        )
+        quote = build_otc_order_quote(request).payment_quote
+        pending = PendingOrderPayment(
+            original_sender=sender,
+            request=request,
+            quote=quote,
+            response_channel="chat",
+            request_fingerprint=_request_fingerprint(request),
+            created_at=9999999999,
+        )
+
+        _store_pending(None, pending)
+        loaded = _load_pending_by_sender(None, sender)
+        second = _pending_payment_message(loaded)
+
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.quote.reference, quote.reference)
+        self.assertIn("I already created a payment request", second)
 
     def test_browser_use_price_text_parser(self):
         product = next(item for item in _mock_otc_catalog() if item.active_ingredient == "Loratadine")

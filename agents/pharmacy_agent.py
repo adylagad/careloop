@@ -1,9 +1,12 @@
 import os
 import re
+import time
 from dataclasses import dataclass
+from typing import Any
 
 from uagents import Context, Protocol
 from uagents_core.contrib.protocols.payment import (
+    CancelPayment,
     CommitPayment,
     CompletePayment,
     Funds,
@@ -71,9 +74,14 @@ class PendingOrderPayment:
     request: CareRequest
     quote: PaymentQuote
     response_channel: str
+    request_fingerprint: str
+    created_at: float
 
 
 pending_orders: dict[str, PendingOrderPayment] = {}
+pending_by_sender: dict[str, str] = {}
+paid_request_by_sender: dict[str, str] = {}
+PAYMENT_EXPIRY_SECONDS = 3600
 
 
 def _context_from_chat_text(text: str) -> dict[str, str]:
@@ -94,6 +102,144 @@ def _context_from_chat_text(text: str) -> dict[str, str]:
         if place_match:
             context["address"] = place_match.group(1).strip(" .,")
     return context
+
+
+def _model_dump(model) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    if hasattr(model, "dict"):
+        return model.dict()
+    return dict(model)
+
+
+def _request_fingerprint(request: CareRequest) -> str:
+    context = request.context or {}
+    address = str(context.get("address") or context.get("location") or "").lower().strip()
+    preference = str(context.get("preference") or "").lower().strip()
+    normalized_text = " ".join(request.text.lower().split())
+    return f"{normalized_text}|{address}|{preference}"
+
+
+def _pending_key(reference: str) -> str:
+    return f"pharmacy:pending:{reference}"
+
+
+def _pending_by_sender_key(sender: str) -> str:
+    return f"pharmacy:pending-by-sender:{sender}"
+
+
+def _paid_key(sender: str) -> str:
+    return f"pharmacy:paid-order:{sender}"
+
+
+def _paid_fingerprint_key(sender: str) -> str:
+    return f"pharmacy:paid-fingerprint:{sender}"
+
+
+def _pending_to_dict(pending: PendingOrderPayment) -> dict[str, Any]:
+    return {
+        "original_sender": pending.original_sender,
+        "request": _model_dump(pending.request),
+        "quote": _model_dump(pending.quote),
+        "response_channel": pending.response_channel,
+        "request_fingerprint": pending.request_fingerprint,
+        "created_at": pending.created_at,
+    }
+
+
+def _pending_from_dict(data: dict[str, Any]) -> PendingOrderPayment:
+    return PendingOrderPayment(
+        original_sender=str(data["original_sender"]),
+        request=CareRequest(**data["request"]),
+        quote=PaymentQuote(**data["quote"]),
+        response_channel=str(data["response_channel"]),
+        request_fingerprint=str(data["request_fingerprint"]),
+        created_at=float(data["created_at"]),
+    )
+
+
+def _is_pending_expired(pending: PendingOrderPayment) -> bool:
+    return time.time() - pending.created_at > PAYMENT_EXPIRY_SECONDS
+
+
+def _store_pending(ctx: Context | None, pending: PendingOrderPayment) -> None:
+    old_reference = pending_by_sender.pop(pending.original_sender, None)
+    if old_reference:
+        pending_orders.pop(old_reference, None)
+        if ctx is not None:
+            ctx.storage.remove(_pending_key(old_reference))
+
+    pending_orders[pending.quote.reference] = pending
+    pending_by_sender[pending.original_sender] = pending.quote.reference
+    if ctx is not None:
+        ctx.storage.set(_pending_key(pending.quote.reference), _pending_to_dict(pending))
+        ctx.storage.set(_pending_by_sender_key(pending.original_sender), pending.quote.reference)
+
+
+def _remove_pending(ctx: Context | None, pending: PendingOrderPayment) -> None:
+    pending_orders.pop(pending.quote.reference, None)
+    if pending_by_sender.get(pending.original_sender) == pending.quote.reference:
+        pending_by_sender.pop(pending.original_sender, None)
+    if ctx is not None:
+        ctx.storage.remove(_pending_key(pending.quote.reference))
+        if ctx.storage.get(_pending_by_sender_key(pending.original_sender)) == pending.quote.reference:
+            ctx.storage.remove(_pending_by_sender_key(pending.original_sender))
+
+
+def _load_pending_by_reference(ctx: Context | None, reference: str) -> PendingOrderPayment | None:
+    pending = pending_orders.get(reference)
+    if pending is None and ctx is not None:
+        data = ctx.storage.get(_pending_key(reference))
+        if data:
+            pending = _pending_from_dict(data)
+            pending_orders[reference] = pending
+            pending_by_sender[pending.original_sender] = reference
+    if pending and _is_pending_expired(pending):
+        _remove_pending(ctx, pending)
+        return None
+    return pending
+
+
+def _load_pending_by_sender(ctx: Context | None, sender: str) -> PendingOrderPayment | None:
+    reference = pending_by_sender.get(sender)
+    if reference is None and ctx is not None:
+        reference = ctx.storage.get(_pending_by_sender_key(sender))
+        if reference:
+            pending_by_sender[sender] = reference
+    if not reference:
+        return None
+    return _load_pending_by_reference(ctx, reference)
+
+
+def _store_paid_order(ctx: Context | None, sender: str, fingerprint: str, order: PharmacyOrderQuote) -> None:
+    _remember_order(sender, order)
+    paid_request_by_sender[sender] = fingerprint
+    if ctx is not None:
+        ctx.storage.set(_paid_key(sender), _model_dump(order))
+        ctx.storage.set(_paid_fingerprint_key(sender), fingerprint)
+
+
+def _load_paid_order(ctx: Context | None, sender: str) -> tuple[str | None, PharmacyOrderQuote | None]:
+    fingerprint = paid_request_by_sender.get(sender)
+    order = PHARMACY_CONTEXT_BY_SENDER.get(sender)
+    if ctx is not None:
+        fingerprint = fingerprint or ctx.storage.get(_paid_fingerprint_key(sender))
+        if order is None:
+            data = ctx.storage.get(_paid_key(sender))
+            if data:
+                order = PharmacyOrderQuote(**data)
+                PHARMACY_CONTEXT_BY_SENDER[sender] = order
+    return fingerprint, order
+
+
+def _pending_payment_message(pending: PendingOrderPayment) -> str:
+    return (
+        "I already created a payment request for this OTC search.\n\n"
+        f"Amount: {pending.quote.amount} {pending.quote.currency}\n"
+        f"Reference: {pending.quote.reference}\n\n"
+        "Please click the Pay option in this chat. After the payment is confirmed, "
+        "I’ll run the live price comparison and send the result here. I won’t create a second payment request."
+    )
 
 
 def _remember_order(sender: str, order: PharmacyOrderQuote) -> None:
@@ -247,7 +393,8 @@ async def pharmacy_chat_handler(ctx: Context, sender: str, text: str) -> str:
     if is_pharmacy_status_intent(text):
         return pharmacy_chat_response(ctx, sender, text)
 
-    existing_order = PHARMACY_CONTEXT_BY_SENDER.get(sender)
+    paid_fingerprint, paid_order = _load_paid_order(ctx, sender)
+    existing_order = paid_order or PHARMACY_CONTEXT_BY_SENDER.get(sender)
     if existing_order and not is_otc_order_intent(text):
         return _answer_followup(sender, text, existing_order)
 
@@ -261,13 +408,24 @@ async def pharmacy_chat_handler(ctx: Context, sender: str, text: str) -> str:
     if not is_otc_order_intent(text):
         return pharmacy_chat_response(ctx, sender, text)
 
+    request_fingerprint = _request_fingerprint(request)
+    if paid_order and paid_fingerprint == request_fingerprint:
+        return format_otc_order_preview(paid_order)
+
+    pending_payment = _load_pending_by_sender(ctx, sender)
+    if pending_payment:
+        return _pending_payment_message(pending_payment)
+
     quote = build_otc_service_payment_quote(request)
-    pending_orders[quote.reference] = PendingOrderPayment(
+    pending = PendingOrderPayment(
         original_sender=sender,
         request=request,
         quote=quote,
         response_channel="chat",
+        request_fingerprint=request_fingerprint,
+        created_at=time.time(),
     )
+    _store_pending(ctx, pending)
     await _send_otc_payment_request(ctx, sender, quote)
     return format_otc_payment_prompt(request, quote)
 
@@ -292,12 +450,15 @@ async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
         return
 
     quote = build_otc_service_payment_quote(msg)
-    pending_orders[quote.reference] = PendingOrderPayment(
+    pending = PendingOrderPayment(
         original_sender=sender,
         request=msg,
         quote=quote,
         response_channel="care",
+        request_fingerprint=_request_fingerprint(msg),
+        created_at=time.time(),
     )
+    _store_pending(ctx, pending)
     ctx.logger.info(f"{AGENT_NAME}: requesting {quote.amount} {quote.currency} for OTC order from {sender}")
     await _send_otc_payment_request(ctx, sender, quote)
 
@@ -305,37 +466,44 @@ async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
 @payment_proto.on_message(CommitPayment)
 async def handle_payment_commit(ctx: Context, sender: str, msg: CommitPayment):
     reference = msg.reference or ""
-    pending_payment = pending_orders.pop(reference, None)
+    pending_payment = None
+    for candidate in [reference, msg.transaction_id]:
+        if candidate:
+            pending_payment = _load_pending_by_reference(ctx, candidate)
+            if pending_payment is not None:
+                break
+    if pending_payment is None:
+        pending_payment = _load_pending_by_sender(ctx, sender)
     if pending_payment is not None:
         original_sender = pending_payment.original_sender
         request = pending_payment.request
         order = build_otc_order_quote(request, pending_payment.quote)
-        _remember_order(original_sender, order)
+        _store_paid_order(ctx, original_sender, pending_payment.request_fingerprint, order)
         result = otc_order_paid_result(request, order)
-        await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
+        _remove_pending(ctx, pending_payment)
+        await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id or pending_payment.quote.reference))
         if pending_payment.response_channel == "chat":
             await ctx.send(original_sender, create_text_chat(format_otc_order_preview(order)))
         else:
             await ctx.send(original_sender, result)
-        ctx.logger.info(f"{AGENT_NAME}: OTC order payment completed for {reference}")
+        ctx.logger.info(f"{AGENT_NAME}: OTC order payment completed for {pending_payment.quote.reference}")
         return
 
-    ctx.logger.warning(f"{AGENT_NAME}: unknown payment reference {reference}")
-    await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
+    ctx.logger.warning(f"{AGENT_NAME}: unknown payment reference {reference or msg.transaction_id}")
+    await ctx.send(
+        sender,
+        CancelPayment(
+            transaction_id=msg.transaction_id,
+            reason="Payment session not found or expired. Please send the OTC request again.",
+        ),
+    )
 
 
 @payment_proto.on_message(RejectPayment)
 async def handle_payment_reject(ctx: Context, sender: str, msg: RejectPayment):
-    matching_order_reference = next(
-        (
-            reference
-            for reference, pending in pending_orders.items()
-            if pending.original_sender == sender
-        ),
-        None,
-    )
-    if matching_order_reference is not None:
-        pending_payment = pending_orders.pop(matching_order_reference)
+    pending_payment = _load_pending_by_sender(ctx, sender)
+    if pending_payment is not None:
+        _remove_pending(ctx, pending_payment)
         request = pending_payment.request
         reason = msg.reason or "buyer rejected payment"
         unpaid = otc_order_unpaid_result(request, reason)
@@ -343,7 +511,7 @@ async def handle_payment_reject(ctx: Context, sender: str, msg: RejectPayment):
             await ctx.send(sender, create_text_chat(unpaid.summary))
         else:
             await ctx.send(sender, unpaid)
-        ctx.logger.info(f"{AGENT_NAME}: OTC order payment rejected for {matching_order_reference}: {reason}")
+        ctx.logger.info(f"{AGENT_NAME}: OTC order payment rejected for {pending_payment.quote.reference}: {reason}")
         return
 
     ctx.logger.warning(f"{AGENT_NAME}: reject from {sender} had no pending request")
