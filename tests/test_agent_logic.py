@@ -55,6 +55,7 @@ from pharmacy_agent import PAYMENT_REQUEST_VERSION, PendingOrderPayment, _load_p
 from pharmacy_data import _parse_browser_price_text  # noqa: E402
 from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat_response  # noqa: E402
 from triage_agent import TRIAGE_CONTEXT_BY_SENDER, triage_chat_response  # noqa: E402
+import orchestrator_agent  # noqa: E402
 from orchestrator_agent import ORCHESTRATOR_CONTEXT_BY_SENDER, OrchestratorSession, orchestrator_chat_response  # noqa: E402
 
 
@@ -645,6 +646,28 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("over-the-counter medicine", response)
         self.assertIn("0.1 FET", response)
         self.assertNotIn("UCLA Health", response)
+
+    def test_orchestrator_can_use_asi_one_for_intent_classification(self):
+        session = OrchestratorSession(case_id="careloop-test")
+
+        with patch.object(
+            orchestrator_agent,
+            "asi_chat_completion",
+            return_value=(
+                '{"route":"careloop-pharmacy-assistant","confidence":"high",'
+                '"rationale":"The user is asking where to get an OTC medicine."}'
+            ),
+        ) as mock_asi:
+            decision = orchestrator_agent._current_intent_decision(
+                "orchestrator-asi-user",
+                "I need something from the drugstore for a sore throat",
+                session,
+                use_llm=True,
+            )
+
+        self.assertEqual(decision["route"], "careloop-pharmacy-assistant")
+        self.assertEqual(decision["confidence"], "high")
+        mock_asi.assert_called_once()
 
     def test_prescription_and_orchestrator_outputs(self):
         request = self.make_request("Explain lisinopril 10mg and book a doctor")

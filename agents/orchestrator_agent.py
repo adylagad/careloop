@@ -396,6 +396,20 @@ def _llm_triage_decision(sender: str, text: str, session: OrchestratorSession) -
     }
 
 
+def _current_intent_decision(
+    sender: str,
+    text: str,
+    session: OrchestratorSession,
+    *,
+    use_llm: bool,
+) -> dict[str, str] | None:
+    if use_llm:
+        llm_decision = _llm_triage_decision(sender, text, session)
+        if llm_decision:
+            return llm_decision
+    return _direct_current_intent(text)
+
+
 def _is_short_followup(text: str) -> bool:
     if _is_caregiver_message_request(text):
         return False
@@ -780,6 +794,13 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         return _intro_message()
     if _is_timeline_request(text):
         return _format_timeline(session)
+    emergency_reason = triage_emergency_reason(text)
+    if emergency_reason:
+        _add_timeline(session, f"Emergency stop: {emergency_reason}")
+        return (
+            f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
+            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
+        )
     if _is_caregiver_message_request(text):
         request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
         result = notify_caregiver(request)
@@ -789,30 +810,22 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         for event in result.timeline_events or []:
             _add_timeline(session, event)
         return _format_caregiver_draft(result)
-    direct_decision = _direct_current_intent(text)
-    if direct_decision:
+    if _is_generic_saved_result_followup(text):
+        saved_answer = _answer_saved_followup(session, text)
+        if saved_answer:
+            return saved_answer
+    current_decision = _current_intent_decision(sender, text, session, use_llm=ctx is not None)
+    if current_decision:
         if ctx is None:
-            return _route_decision_preview(sender, session, _message_text(text), direct_decision)
-        return await _route_decision(ctx, sender, session, _message_text(text), direct_decision)
+            return _route_decision_preview(sender, session, _message_text(text), current_decision)
+        return await _route_decision(ctx, sender, session, _message_text(text), current_decision)
     if _is_result_followup(text):
         saved_answer = _answer_saved_followup(session, text)
         if saved_answer:
             return saved_answer
 
-    emergency_reason = triage_emergency_reason(text)
-    if emergency_reason:
-        _add_timeline(session, f"Emergency stop: {emergency_reason}")
-        return (
-            f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
-            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
-        )
-
     combined_text = f"{session.last_text}\nFollow-up detail: {text}" if session.last_text and _is_short_followup(text) else text
     decision = triage_route(combined_text)
-    if decision["route"] == "clarify" and ctx is not None:
-        llm_decision = _llm_triage_decision(sender, text, session)
-        if llm_decision:
-            return await _route_decision(ctx, sender, session, _message_text(text), llm_decision)
     if ctx is None:
         return _route_decision_preview(sender, session, combined_text, decision)
     return await _route_decision(ctx, sender, session, combined_text, decision)
@@ -824,6 +837,13 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
         return _intro_message()
     if _is_timeline_request(text):
         return _format_timeline(session)
+    emergency_reason = triage_emergency_reason(text)
+    if emergency_reason:
+        _add_timeline(session, f"Emergency stop: {emergency_reason}")
+        return (
+            f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
+            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
+        )
     if _is_caregiver_message_request(text):
         request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
         result = notify_caregiver(request)
@@ -833,21 +853,17 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
         for event in result.timeline_events or []:
             _add_timeline(session, event)
         return _format_caregiver_draft(result)
-    direct_decision = _direct_current_intent(text)
-    if direct_decision:
-        return _route_decision_preview(sender, session, _message_text(text), direct_decision)
+    if _is_generic_saved_result_followup(text):
+        saved_answer = _answer_saved_followup(session, text)
+        if saved_answer:
+            return saved_answer
+    current_decision = _current_intent_decision(sender, text, session, use_llm=False)
+    if current_decision:
+        return _route_decision_preview(sender, session, _message_text(text), current_decision)
     if _is_result_followup(text):
         saved_answer = _answer_saved_followup(session, text)
         if saved_answer:
             return saved_answer
-
-    emergency_reason = triage_emergency_reason(text)
-    if emergency_reason:
-        _add_timeline(session, f"Emergency stop: {emergency_reason}")
-        return (
-            f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
-            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
-        )
 
     combined_text = f"{session.last_text}\nFollow-up detail: {text}" if session.last_text and _is_short_followup(text) else text
     decision = triage_route(combined_text)
