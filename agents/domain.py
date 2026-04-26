@@ -866,6 +866,12 @@ def is_appointment_intent(text: str) -> bool:
         "dermatologist",
         "cardiologist",
         "dentist",
+        "mri",
+        "scan",
+        "imaging",
+        "radiology",
+        "xray",
+        "x-ray",
     ]
     return any(term in normalized for term in action_terms)
 
@@ -911,6 +917,11 @@ def format_appointment_payment_prompt(request: CareRequest, quote: PaymentQuote)
     location = infer_location(request.text)
     insurance = infer_insurance(request.text)
     insurance_line = f"\nInsurance preference: {insurance}" if insurance else ""
+    imaging_note = (
+        "\n\nMRI note: many imaging centers require a clinician order or referral before scheduling."
+        if specialty == "imaging center"
+        else ""
+    )
     return (
         "CareLoop Appointment Assistant\n\n"
         f"I can run a live appointment search for {specialty} near {location}.{insurance_line}\n\n"
@@ -920,23 +931,46 @@ def format_appointment_payment_prompt(request: CareRequest, quote: PaymentQuote)
         f"- Reference: {quote.reference}\n\n"
         "After payment, I will show the real providers/booking links I can verify, visible availability or cost "
         "when published, and the safest next step. I will not claim a booking is confirmed unless a real booking API confirms it."
+        f"{imaging_note}"
+    )
+
+
+def _appointment_context_note(search: AppointmentSearchQuote) -> str:
+    if search.specialty == "imaging center":
+        return (
+            "MRI/imaging note: many centers require a clinician order, referral, or insurance authorization. "
+            "If knee pain is severe, swollen, or follows an injury, consider urgent care or an orthopedic/sports medicine visit."
+        )
+    if search.specialty in {"orthopedic surgery", "sports medicine"}:
+        return "Knee-pain note: bring medication list, symptom timeline, injury details, and any prior imaging."
+    return "Prep note: bring ID, insurance card, medication list, symptom notes, and caregiver contact if helpful."
+
+
+def _caregiver_appointment_summary(search: AppointmentSearchQuote) -> str:
+    selected = search.selected_option
+    if not selected:
+        return "Caregiver update: appointment search completed, but no clear booking option was found yet."
+    return (
+        f"Caregiver update: CareLoop found a {search.specialty} option near {search.location}: "
+        f"{selected.provider_name}. Book/check: {selected.booking_url}. "
+        f"Availability: {selected.earliest_available}. Cost: {selected.estimated_cost}."
     )
 
 
 def format_appointment_search_preview(search: AppointmentSearchQuote) -> str:
-    sources = "\n".join(f"- {source}" for source in search.data_sources) or "- no source available"
+    sources = ", ".join(search.data_sources) or "no source available"
     if search.options:
         option_lines = "\n".join(
             (
-                f"{index}. {option.provider_name} — {option.specialty}\n"
-                f"   Location: {option.location}\n"
+                f"{index}. {option.provider_name}\n"
+                f"   Specialty: {option.specialty}\n"
+                f"   Where: {option.location}\n"
                 f"   Availability: {option.earliest_available}\n"
                 f"   Cost: {option.estimated_cost}\n"
                 f"   Phone: {option.phone or 'not published'}\n"
-                f"   Book/check: {option.booking_url}\n"
-                f"   Source: {option.source}"
+                f"   Link: {option.booking_url}"
             )
-            for index, option in enumerate(search.options, start=1)
+            for index, option in enumerate(search.options[:3], start=1)
         )
     else:
         option_lines = "No real appointment options were found for this search right now."
@@ -954,14 +988,13 @@ def format_appointment_search_preview(search: AppointmentSearchQuote) -> str:
         f"Location: {search.location}\n"
         f"Insurance: {insurance}\n"
         f"Urgency: {search.urgency}\n\n"
-        f"Data sources:\n{sources}\n\n"
-        f"Real appointment options found:\n{option_lines}\n\n"
-        f"Recommended next step: {selected_text}\n\n"
-        f"CareLoop service fee: {search.payment_quote.amount} FET via {search.payment_quote.payment_method}\n"
-        f"Payment reference: {search.payment_quote.reference}\n\n"
-        "Cost note: exact patient cost is often not public until the booking page verifies insurance or cash-pay policy. "
-        "I only show cost when the source publishes it.\n\n"
-        "Safety note: this is appointment logistics support, not diagnosis. For emergency symptoms, call emergency services."
+        f"Real options:\n{option_lines}\n\n"
+        f"Best next step: {selected_text}\n\n"
+        f"{_appointment_context_note(search)}\n\n"
+        f"{_caregiver_appointment_summary(search)}\n\n"
+        f"Sources: {sources}\n"
+        "Cost note: exact patient cost is often hidden until insurance or cash-pay details are checked on the booking page.\n"
+        "Safety note: appointment logistics only, not diagnosis. For emergency symptoms, call emergency services."
     )
 
 

@@ -302,6 +302,10 @@ def _intro_message() -> str:
 
 
 def _answer_followup(sender: str, question: str, search: AppointmentSearchQuote) -> str:
+    deterministic = _deterministic_followup_answer(question, search)
+    if deterministic:
+        return deterministic
+
     option_lines = "\n".join(
         (
             f"{index}. {option.provider_name}; {option.specialty}; {option.location}; "
@@ -329,13 +333,105 @@ def _answer_followup(sender: str, question: str, search: AppointmentSearchQuote)
     return llm_answer or fallback
 
 
+def _is_followup(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    followup_terms = [
+        "closest",
+        "nearest",
+        "link",
+        "url",
+        "takes",
+        "accepts",
+        "medicare",
+        "insurance",
+        "daughter",
+        "son",
+        "caregiver",
+        "tell",
+        "send",
+        "book",
+        "first one",
+        "second one",
+        "third one",
+        "what should i bring",
+        "referral",
+        "order",
+    ]
+    return any(term in normalized for term in followup_terms)
+
+
+def _option_by_ordinal(text: str, search: AppointmentSearchQuote):
+    normalized = " ".join(text.lower().split())
+    if not search.options:
+        return None
+    if "second" in normalized or "2" in normalized:
+        return search.options[1] if len(search.options) > 1 else search.options[0]
+    if "third" in normalized or "3" in normalized:
+        return search.options[2] if len(search.options) > 2 else search.options[0]
+    return search.options[0]
+
+
+def _deterministic_followup_answer(question: str, search: AppointmentSearchQuote) -> str | None:
+    normalized = " ".join(question.lower().split())
+    selected = _option_by_ordinal(question, search)
+    if selected is None:
+        return "I do not have appointment options from the last paid search yet."
+
+    if any(term in normalized for term in ["link", "url", "book", "first one", "second one", "third one"]):
+        return (
+            f"{selected.provider_name}\n"
+            f"Booking/check link: {selected.booking_url}\n"
+            f"Phone: {selected.phone or 'not published'}\n"
+            "Final appointment confirmation happens on the booking page or with the provider."
+        )
+
+    if "closest" in normalized or "nearest" in normalized:
+        return (
+            f"The closest-looking option from the last search is:\n"
+            f"{selected.provider_name}\n"
+            f"Where: {selected.location}\n"
+            f"Link: {selected.booking_url}\n\n"
+            "I can only rank by the order returned from the live/public source unless exact distances are published."
+        )
+
+    if any(term in normalized for term in ["medicare", "insurance", "takes", "accepts"]):
+        insurance = search.insurance or "your insurance"
+        return (
+            f"I could not verify accepted insurance from the public search unless the source explicitly listed it.\n\n"
+            f"Best option to check {insurance}: {selected.provider_name}\n"
+            f"Link: {selected.booking_url}\n"
+            f"Phone: {selected.phone or 'not published'}\n\n"
+            "Confirm insurance before booking because provider directories and booking pages can be out of date."
+        )
+
+    if any(term in normalized for term in ["daughter", "son", "caregiver", "tell", "send"]):
+        return (
+            f"Caregiver update: I found a {search.specialty} option near {search.location}: "
+            f"{selected.provider_name}. Availability: {selected.earliest_available}. "
+            f"Cost: {selected.estimated_cost}. Book/check here: {selected.booking_url}. "
+            "Please help confirm the slot, insurance, transportation, and any referral/order requirements."
+        )
+
+    if any(term in normalized for term in ["bring", "referral", "order"]):
+        if search.specialty == "imaging center":
+            return (
+                "For an MRI/imaging appointment, bring ID, insurance card, the clinician order/referral if you have one, "
+                "a medication list, symptom/injury notes, and any prior imaging. Many centers will not schedule MRI without an order."
+            )
+        return (
+            "Bring ID, insurance card, medication list, symptom timeline, caregiver contact, and any prior records or imaging."
+        )
+
+    return None
+
+
 def appointment_chat_response(ctx: Context, sender: str, text: str) -> str:
     normalized = " ".join(text.lower().split())
     if normalized in {"hi", "hello", "hey", "help", "what can you do", "what do you do"}:
         return _intro_message()
 
     existing_search = APPOINTMENT_CONTEXT_BY_SENDER.get(sender)
-    if existing_search and not is_appointment_intent(text):
+    if existing_search and (not is_appointment_intent(text) or _is_followup(text)):
         return _answer_followup(sender, text, existing_search)
 
     request = CareRequest(
@@ -361,7 +457,7 @@ async def appointment_chat_handler(ctx: Context, sender: str, text: str) -> str:
 
     paid_fingerprint, paid_search = _load_paid_search(ctx, sender)
     existing_search = paid_search or APPOINTMENT_CONTEXT_BY_SENDER.get(sender)
-    if existing_search and not is_appointment_intent(text):
+    if existing_search and (not is_appointment_intent(text) or _is_followup(text)):
         return _answer_followup(sender, text, existing_search)
 
     request = CareRequest(

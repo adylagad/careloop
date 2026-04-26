@@ -20,23 +20,29 @@ BROWSER_APPOINTMENT_MODEL = os.getenv("APPOINTMENT_BROWSER_MODEL", "gpt-5.4-mini
 BROWSER_APPOINTMENT_LIMIT = int(os.getenv("APPOINTMENT_BROWSER_LIMIT", "5"))
 
 SPECIALTY_KEYWORDS = {
+    "imaging center": ["mri", "scan", "imaging", "radiology", "xray", "x-ray", "ct scan", "ultrasound"],
     "primary care": ["primary care", "pcp", "family doctor", "family medicine", "checkup", "annual"],
     "internal medicine": ["internal medicine", "internist"],
     "geriatrics": ["geriatric", "elder", "senior"],
     "dermatology": ["skin", "rash", "dermatology", "dermatologist"],
     "cardiology": ["heart", "cardiology", "cardiologist", "chest follow up"],
     "orthopedic surgery": ["knee", "hip", "shoulder", "orthopedic", "orthopedist", "bone"],
+    "sports medicine": ["sports medicine", "sprain", "strain", "joint injury", "knee pain"],
     "ophthalmology": ["eye", "vision", "ophthalmology", "ophthalmologist"],
     "dentistry": ["dental", "tooth", "dentist"],
     "urgent care": ["urgent", "same day", "today", "asap", "walk in"],
 }
 
 NPPES_TAXONOMY_BY_SPECIALTY = {
+    "imaging center": "Clinic/Center, Radiology",
     "primary care": "Family Medicine",
     "geriatrics": "Geriatric Medicine",
+    "sports medicine": "Sports Medicine",
     "urgent care": "Clinic/Center, Urgent Care",
     "dentistry": "Dentist",
 }
+
+NPI2_SPECIALTIES = {"imaging center", "urgent care"}
 
 
 @dataclass
@@ -77,7 +83,7 @@ def infer_insurance(text: str) -> str | None:
 
 def infer_location(text: str, default: str = "Los Angeles, CA") -> str:
     match = re.search(
-        r"\b(?:near|around|in|at|by)\s+([A-Za-z0-9][A-Za-z0-9 .,'-]{2,70}?)(?:\s+with\b|\s+that\b|\s+for\b|\s+this\b|[.!?]|$)",
+        r"\b(?:near|around|in|at|by)\s+([A-Za-z0-9][A-Za-z0-9 .,'-]{2,70}?)(?:\s+with\b|\s+that\b|\s+for\b|\s+this\b|\s+right now\b|\s+now\b|[.!?]|$)",
         text,
         re.IGNORECASE,
     )
@@ -134,6 +140,12 @@ def _healthgrades_search_url(specialty: str, location: str) -> str:
     return f"https://www.healthgrades.com/usearch?what={quote_plus(specialty)}&where={quote_plus(location)}"
 
 
+def _zocdoc_or_maps_url(specialty: str, location: str, insurance: str | None = None) -> str:
+    if specialty.lower() == "imaging center":
+        return _maps_search_url("MRI imaging center", location)
+    return _zocdoc_search_url(specialty, location, insurance)
+
+
 def _maps_search_url(provider: str, location: str) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={quote_plus(provider + ' ' + location)}"
 
@@ -185,7 +197,7 @@ def nppes_provider_options(specialty: str, location: str, insurance: str | None 
     taxonomy_description = NPPES_TAXONOMY_BY_SPECIALTY.get(specialty.lower(), specialty)
     params = {
         "version": "2.1",
-        "enumeration_type": "NPI-1",
+        "enumeration_type": "NPI-2" if specialty.lower() in NPI2_SPECIALTIES else "NPI-1",
         "taxonomy_description": taxonomy_description,
         "limit": max(limit, 5),
         "country_code": "US",
@@ -201,7 +213,7 @@ def nppes_provider_options(specialty: str, location: str, insurance: str | None 
     try:
         data = _request_json("GET", NPPES_URL, params=params)
     except Exception:
-        return []
+        return [_appointment_search_handoff_option(specialty, location, insurance)]
 
     options: list[AppointmentOption] = []
     seen: set[str] = set()
@@ -237,20 +249,31 @@ def nppes_provider_options(specialty: str, location: str, insurance: str | None 
             break
 
     if not options:
-        options.append(
-            AppointmentOption(
-                provider_name=f"{specialty.title()} search on Zocdoc",
-                specialty=specialty,
-                location=location,
-                earliest_available="check live booking page",
-                estimated_cost="shown by booking site when available",
-                booking_url=_zocdoc_search_url(specialty, location, insurance),
-                profile_url=_healthgrades_search_url(specialty, location),
-                source="Zocdoc/Healthgrades search handoff",
-                notes="No matching CMS NPPES rows were returned for this exact search, so this is a real booking search handoff.",
-            )
-        )
+        options.append(_appointment_search_handoff_option(specialty, location, insurance))
     return options
+
+
+def _appointment_search_handoff_option(
+    specialty: str,
+    location: str,
+    insurance: str | None = None,
+) -> AppointmentOption:
+    provider_name = (
+        "MRI imaging centers near you"
+        if specialty.lower() == "imaging center"
+        else f"{specialty.title()} booking search"
+    )
+    return AppointmentOption(
+        provider_name=provider_name,
+        specialty=specialty,
+        location=location,
+        earliest_available="check live booking page",
+        estimated_cost="shown by booking site when available",
+        booking_url=_zocdoc_or_maps_url(specialty, location, insurance),
+        profile_url=_healthgrades_search_url(specialty, location),
+        source="Zocdoc/Google Maps/Healthgrades search handoff",
+        notes="Public provider registry lookup was unavailable or returned no exact rows, so this is a real booking/search handoff.",
+    )
 
 
 async def _fetch_browser_appointment_options_async(
@@ -269,6 +292,8 @@ async def _fetch_browser_appointment_options_async(
         "urgent care clinic pages, or hospital scheduling pages. Return only options with a real URL. "
         "If a real appointment slot or visit cost is visible, include it exactly. If cost or availability is not visible, "
         "write 'not published'. Do not invent providers, times, or prices. "
+        "For MRI/imaging searches, prefer imaging centers, radiology centers, and hospital radiology scheduling pages; "
+        "note when a clinician order/referral may be required. "
         f"Specialty/need: {specialty}. Location: {location}. Insurance: {insurance_text}. Urgency: {urgency}. "
         f"Return at most {BROWSER_APPOINTMENT_LIMIT} lines in this exact format: "
         "- Provider — Specialty — Location — Earliest availability — Cost — Booking URL."

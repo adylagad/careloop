@@ -17,10 +17,12 @@ from domain import (  # noqa: E402
     _mock_otc_catalog,
     appointment_unpaid_result,
     build_appointment_payment_quote,
+    build_appointment_search_quote,
     build_otc_order_quote,
     build_pharmacy_fulfillment_status,
     explain_prescription_document,
     explain_prescription,
+    format_appointment_search_preview,
     format_otc_order_preview,
     is_otc_order_intent,
     is_appointment_intent,
@@ -43,7 +45,7 @@ from appointment_agent import (  # noqa: E402
     _request_fingerprint as appointment_request_fingerprint,
     appointment_chat_response,
 )
-from appointment_data import parse_browser_appointment_text  # noqa: E402
+from appointment_data import infer_appointment_specialty, infer_location, parse_browser_appointment_text  # noqa: E402
 from browser_cache import browser_cache_key, cached_browser_call  # noqa: E402
 from caregiver_agent import CAREGIVER_CONTEXT_BY_SENDER, caregiver_chat_response  # noqa: E402
 from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  # noqa: E402
@@ -364,6 +366,48 @@ class AgentLogicTests(unittest.TestCase):
 
         self.assertNotEqual(pending.request_version, APPOINTMENT_PAYMENT_REQUEST_VERSION)
         self.assertTrue(appointment_pending_requires_refresh(pending, appointment_request_fingerprint(request)))
+
+    def test_appointment_mri_intent_targets_imaging_center(self):
+        text = "Can you find a doctor who can perform an MRI scan for my knee near USC Village right now?"
+
+        self.assertTrue(is_appointment_intent(text))
+        self.assertEqual(infer_appointment_specialty(text), "imaging center")
+        self.assertEqual(infer_location(text), "USC Village")
+
+        response = appointment_chat_response(None, "appointment-mri-user", text)
+
+        self.assertIn("imaging center", response)
+        self.assertIn("MRI note", response)
+        self.assertIn("Service fee required", response)
+
+    def test_appointment_result_is_concise_and_imaging_safe(self):
+        request = self.make_request(
+            "Find an MRI scan near USC Village",
+            {"specialty": "imaging center", "location": "USC Village", "urgency": "routine"},
+        )
+        search = build_appointment_search_quote(request)
+        preview = format_appointment_search_preview(search)
+
+        self.assertIn("Real options", preview)
+        self.assertIn("MRI/imaging note", preview)
+        self.assertIn("Caregiver update", preview)
+        self.assertLessEqual(preview.count("\n1."), 1)
+
+    def test_appointment_followup_uses_existing_search_context(self):
+        sender = "appointment-followup-user"
+        APPOINTMENT_CONTEXT_BY_SENDER.pop(sender, None)
+        request = self.make_request(
+            "Find an MRI scan near USC Village",
+            {"specialty": "imaging center", "location": "USC Village", "urgency": "routine"},
+        )
+        APPOINTMENT_CONTEXT_BY_SENDER[sender] = build_appointment_search_quote(request)
+
+        link_only = appointment_chat_response(None, sender, "give me the link only")
+        caregiver = appointment_chat_response(None, sender, "tell my daughter")
+
+        self.assertIn("Booking/check link", link_only)
+        self.assertNotIn("Service fee required", link_only)
+        self.assertIn("Caregiver update", caregiver)
 
     def test_browser_cache_dedupes_equivalent_payloads(self):
         calls = {"count": 0}
