@@ -261,6 +261,9 @@ def _is_caregiver_message_request(text: str) -> bool:
     normalized = _message_text(text).lower()
     recipient_terms = [
         "caregiver",
+        "caretaker",
+        "care taker",
+        "carer",
         "daughter",
         "son",
         "wife",
@@ -283,7 +286,12 @@ def _is_caregiver_message_request(text: str) -> bool:
         "let him know",
         "let them know",
     ]
-    return any(term in normalized for term in recipient_terms) and any(term in normalized for term in message_terms)
+    has_message_action = any(term in normalized for term in message_terms)
+    if not has_message_action:
+        return False
+    if any(term in normalized for term in recipient_terms):
+        return True
+    return any(term in normalized for term in ["write an email", "write a mail", "draft an email", "email for me"])
 
 
 def _is_send_caregiver_email_request(text: str) -> bool:
@@ -345,6 +353,9 @@ def _is_generic_saved_result_followup(text: str) -> bool:
         "imaging",
         "radiology",
         "caregiver",
+        "caretaker",
+        "care taker",
+        "carer",
         "daughter",
         "son",
         "reminder",
@@ -373,7 +384,8 @@ def _llm_triage_decision(sender: str, text: str, session: OrchestratorSession) -
         "Use careloop-pharmacy-assistant for OTC medicine search/order/price/location questions, "
         "including Tylenol, Advil, Claritin, allergy medicine, pain medicine, pharmacy, or where to buy medicine. "
         "Use careloop-appointment-assistant for doctors, clinics, appointments, MRI, imaging, scans, or booking care. "
-        "Use careloop-caregiver-notifier for drafting/telling/texting a family member or caregiver. "
+        "Use careloop-caregiver-notifier for drafting/telling/texting/emailing a family member, caretaker, or caregiver. "
+        "If the user asks to write an email or message about their current situation, use careloop-caregiver-notifier. "
         "Return only compact JSON with keys route, confidence, rationale."
     )
     context = {

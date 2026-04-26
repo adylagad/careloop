@@ -658,6 +658,69 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(session.last_caregiver_subject, "Appointment update")
         self.assertIn("bad cough", session.last_caregiver_body)
 
+    def test_orchestrator_routes_caretaker_email_before_saved_booking_followup(self):
+        sender = "orchestrator-caretaker-email-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+        session = OrchestratorSession(case_id="careloop-test")
+        option = AppointmentOption(
+            provider_name="Katina Robertson Murray, MD",
+            specialty="family medicine",
+            location="1520 San Pablo St, Los Angeles, CA",
+            phone="",
+            booking_url="https://example.com/book",
+            source="test",
+        )
+        session.last_paid_route = "careloop-appointment-assistant"
+        session.last_appointment_search = AppointmentSearchQuote(
+            case_id=session.case_id,
+            specialty="family medicine",
+            location="Los Angeles",
+            options=[option],
+            selected_option=option,
+            data_sources=["test"],
+            status="booking_handoff_ready",
+            payment_quote=PaymentQuote(
+                case_id=session.case_id,
+                service_name="CareLoop Appointment Search",
+                amount="0.1",
+                reference="test-ref",
+            ),
+        )
+        ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = session
+
+        with patch.object(
+            orchestrator_agent,
+            "asi_chat_completion",
+            return_value=(
+                "Subject: Appointment update\n\n"
+                "Body:\n"
+                "Hi, I booked an appointment for tomorrow and wanted to keep you updated."
+            ),
+        ):
+            response = orchestrator_chat_response(
+                None,
+                sender,
+                "can you write an email to my caretaker about my situation. i have booked the appointment for tomorrow",
+            )
+
+        self.assertIn("Drafted email to adyhacks@gmail.com", response)
+        self.assertIn("Appointment update", response)
+        self.assertNotIn("Use this booking/search link", response)
+
+    def test_orchestrator_routes_generic_current_situation_email(self):
+        sender = "orchestrator-current-situation-email-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        with patch.object(
+            orchestrator_agent,
+            "asi_chat_completion",
+            return_value="Subject: Current care update\n\nBody:\nHi, I wanted to share a quick update.",
+        ):
+            response = orchestrator_chat_response(None, sender, "can you write an email for me about my current situation")
+
+        self.assertIn("Drafted email to adyhacks@gmail.com", response)
+        self.assertNotIn("prescription readiness", response.lower())
+
     def test_orchestrator_sends_saved_caregiver_email(self):
         sender = "orchestrator-caregiver-email-send-user"
         ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
