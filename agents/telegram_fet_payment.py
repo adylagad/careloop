@@ -17,7 +17,6 @@ import os
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
-from urllib.parse import urlencode
 
 try:
     from cosmpy.aerial.client import LedgerClient, NetworkConfig
@@ -72,12 +71,6 @@ def explorer_address_url(address: str) -> str:
 
 def explorer_tx_url(tx_hash: str) -> str:
     return f"{EXPLORER_BASE}/transactions/{tx_hash}"
-
-
-def wallet_pay_url(recipient: str, amount: str, memo: str) -> str:
-    """Best-effort prefilled-transfer URL for the Fetch.ai web wallet."""
-    params = urlencode({"recipient": recipient, "amount": amount, "memo": memo})
-    return f"https://browser-wallet.fetch.ai/send?{params}"
 
 
 def auto_send_testnet_fet(recipient: str, amount: str, memo: str) -> PaymentVerification:

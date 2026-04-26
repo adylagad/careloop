@@ -33,7 +33,6 @@ from telegram_fet_payment import (
     explorer_tx_url,
     telegram_fet_recipient,
     verify_testnet_payment,
-    wallet_pay_url,
 )
 
 
@@ -128,7 +127,6 @@ def _update_text(update: dict[str, Any]) -> tuple[int | None, str | None]:
 
 
 def _format_pay_card(pending: PendingTelegramPayment) -> str:
-    pay_link = wallet_pay_url(pending.recipient, pending.quote.amount, pending.quote.reference)
     return (
         "FET payment inside Telegram\n\n"
         f"Amount: {pending.quote.amount} FET (Fetch.ai stable testnet)\n"
@@ -136,8 +134,8 @@ def _format_pay_card(pending: PendingTelegramPayment) -> str:
         f"Memo / reference: {pending.quote.reference}\n\n"
         "Two ways to pay:\n"
         "1. Reply /pay to have the demo wallet send the testnet FET for you.\n"
-        "2. Send the FET yourself, then reply /paid <tx-hash> to verify.\n\n"
-        f"Web wallet (prefilled): {pay_link}\n"
+        "2. Open your Fetch.ai wallet on the stable testnet, send the amount above to "
+        "the recipient with that exact memo, then reply /paid <tx-hash> to verify.\n\n"
         f"Recipient explorer: {explorer_address_url(pending.recipient)}"
     )
 
