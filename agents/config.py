@@ -28,6 +28,8 @@ def create_careloop_agent(
     seed_env: str,
     default_seed: str,
     description: str,
+    readme_path: str | None = None,
+    avatar_url: str | None = None,
 ) -> Agent:
     agentverse_key = os.getenv("AGENTVERSE_API_KEY") or None
     mailbox = bool(agentverse_key) and env_bool("CARELOOP_MAILBOX", True)
@@ -45,4 +47,6 @@ def create_careloop_agent(
             "description": description,
             "tags": ["careloop", "la-hacks-2026", "healthcare", "asi-one"],
         },
+        readme_path=readme_path,
+        avatar_url=avatar_url,
     )

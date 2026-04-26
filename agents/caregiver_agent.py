@@ -15,7 +15,11 @@ agent = create_careloop_agent(
     port=PORT,
     seed_env="CAREGIVER_AGENT_SEED",
     default_seed="careloop caregiver notifier seed phrase change me",
-    description="CareLoop caregiver notifier drafts concise SMS/email-style family updates.",
+    description=(
+        "CareLoop Caregiver Notifier drafts stateful SMS/email-style family updates "
+        "from care events and upstream agent results."
+    ),
+    readme_path="agents/readmes/caregiver_notifier.md",
 )
 
 care_proto = Protocol(name="CareLoopCaregiverProtocol", version="0.1.0")
