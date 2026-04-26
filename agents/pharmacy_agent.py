@@ -32,7 +32,7 @@ from domain import (
     result_to_text,
 )
 from llm import asi_chat_completion
-from models import CareRequest, CareResult, PaidSpecialistRequest, PaymentQuote, PharmacyOrderQuote
+from models import CareRequest, CareResult, PaymentQuote, PharmacyOrderQuote
 from pharmacy_data import nearby_pharmacies
 
 
@@ -499,47 +499,6 @@ async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
     _store_pending(ctx, pending)
     ctx.logger.info(f"{AGENT_NAME}: requesting {quote.amount} {quote.currency} for OTC order from {sender}")
     await _send_otc_payment_request(ctx, sender, quote)
-
-
-@care_proto.on_message(PaidSpecialistRequest)
-async def handle_paid_specialist_request(ctx: Context, sender: str, msg: PaidSpecialistRequest):
-    buyer_sender = msg.buyer_sender
-    request = CareRequest(
-        case_id=msg.case_id,
-        user_id=buyer_sender,
-        text=msg.text,
-        context=msg.context,
-    )
-    request_fingerprint = _request_fingerprint(request)
-    paid_fingerprint, paid_order = _load_paid_order(ctx, buyer_sender)
-    if paid_order and paid_fingerprint == request_fingerprint:
-        await ctx.send(buyer_sender, create_text_chat(format_otc_order_preview(paid_order)))
-        return
-
-    pending_payment = _load_pending_by_sender(ctx, buyer_sender)
-    if pending_payment:
-        if _pending_requires_refresh(pending_payment, request_fingerprint):
-            ctx.logger.info(
-                f"{AGENT_NAME}: refreshing routed pending payment {pending_payment.quote.reference} for {buyer_sender}"
-            )
-            _remove_pending(ctx, pending_payment)
-        else:
-            await _send_otc_payment_request(ctx, buyer_sender, pending_payment.quote)
-            return
-
-    quote = build_otc_service_payment_quote(request)
-    pending = PendingOrderPayment(
-        original_sender=buyer_sender,
-        request=request,
-        quote=quote,
-        response_channel="chat",
-        request_fingerprint=request_fingerprint,
-        created_at=time.time(),
-        request_version=PAYMENT_REQUEST_VERSION,
-    )
-    _store_pending(ctx, pending)
-    ctx.logger.info(f"{AGENT_NAME}: routed payment request from {sender} to ASI buyer {buyer_sender}")
-    await _send_otc_payment_request(ctx, buyer_sender, quote)
 
 
 @payment_proto.on_message(CommitPayment)

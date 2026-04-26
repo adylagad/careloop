@@ -248,9 +248,9 @@ def _is_short_followup(text: str) -> bool:
 
 def _intro_message() -> str:
     return (
-        "Hi, I’m CareLoop. Tell me what is happening and I’ll coordinate the right specialist.\n\n"
-        "I can route prescription questions, OTC medicine orders, appointment searches, caregiver updates, "
-        "and reminder planning. Paid live searches happen in the pharmacy or appointment specialist chats so ASI:One can show the FET card."
+        "Hi, I’m CareLoop. Tell me what you need help with and I’ll guide the next step.\n\n"
+        "I can help with prescription questions, over-the-counter medicine options, appointment searches, "
+        "caregiver updates, and medication reminders."
     )
 
 
@@ -276,16 +276,9 @@ def _specialist_handle(route: str) -> str:
 
 
 def _paid_handoff(route: str, text: str, session: OrchestratorSession, reason: str) -> str:
-    handle = _specialist_handle(route)
-    session.timeline.append(f"Paid specialist handoff prepared: {route}")
-    return (
-        f"CareLoop route: {handle}\n\n"
-        f"Why: {reason}\n"
-        f"Next: send this to {handle}:\n"
-        f"`{text}`\n\n"
-        "That specialist will show the FET payment card before running the live search.\n\n"
-        f"{_format_timeline(session)}"
-    )
+    quote = _build_paid_quote(route, CareRequest(case_id=session.case_id, user_id="preview", text=text))
+    session.timeline.append("Payment requested")
+    return _format_paid_payment_prompt(route, CareRequest(case_id=session.case_id, user_id="preview", text=text), quote, session)
 
 
 def _build_paid_quote(route: str, request: CareRequest) -> PaymentQuote:

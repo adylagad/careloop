@@ -499,10 +499,10 @@ class AgentLogicTests(unittest.TestCase):
         response = orchestrator_chat_response(None, sender, "Find an MRI scan near USC Village")
         timeline = orchestrator_chat_response(None, sender, "timeline")
 
-        self.assertIn("@careloop-appointment-assistant", response)
-        self.assertIn("FET payment card", response)
-        self.assertIn("CareLoop timeline", response)
-        self.assertIn("Paid specialist handoff", timeline)
+        self.assertIn("nearby appointment and imaging options", response)
+        self.assertIn("0.1 FET", response)
+        self.assertIn("clinician order or referral", response)
+        self.assertIn("Payment requested", timeline)
 
     def test_orchestrator_handles_local_caregiver_flow(self):
         sender = "orchestrator-caregiver-user"

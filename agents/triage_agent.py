@@ -117,7 +117,7 @@ def _format_triage_answer(text: str, route: str, confidence: str, rationale: str
     next_step = actions[0] if actions else f"Route to {handle}."
     payment_note = ""
     if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
-        payment_note = "\nPayment: that specialist will show a FET payment card before live search."
+        payment_note = "\nPayment: CareLoop will ask for the FET service fee before the live search."
 
     return (
         f"Route this to {handle}.\n\n"

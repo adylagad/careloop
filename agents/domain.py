@@ -1335,12 +1335,12 @@ def triage_next_actions(route: str) -> list[str]:
             "Ask the user to upload/paste the prescription label if not already provided.",
         ],
         PHARMACY_ASSISTANT_AGENT_NAME: [
-            "Route to @careloop-pharmacy-options for OTC search/order.",
-            "Expect a FET payment card before live price search.",
+            "Start the OTC search/order flow.",
+            "Ask for the FET service fee before the live price search.",
         ],
         APPOINTMENT_AGENT_NAME: [
-            "Route to @careloop-appointment-assistant.",
-            "Expect a FET payment card before live appointment/provider search.",
+            "Start the appointment/provider search flow.",
+            "Ask for the FET service fee before the live appointment/provider search.",
         ],
         "careloop-caregiver-notifier": [
             "Route to @careloop-caregiver-notifier.",

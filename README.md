@@ -142,9 +142,8 @@ My dad has chest pain and cannot breathe.
 ## Orchestrator Agent
 
 `careloop-orchestrator` is the demo-facing CareLoop coordinator. It is stateful, starts
-with triage, keeps a visible care timeline, and can own the FET payment card for paid
-appointment/pharmacy searches so the user does not need to paste the same query into a
-specialist chat.
+with triage, keeps a demo timeline, and starts paid appointment/pharmacy searches with a
+patient-facing FET service-fee step.
 
 Example ASI:One prompts:
 
