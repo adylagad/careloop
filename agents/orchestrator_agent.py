@@ -36,7 +36,7 @@ from domain import (
     triage_request,
     triage_route,
 )
-from models import CareRequest, CareResult, PaymentQuote
+from models import AppointmentSearchQuote, CareRequest, CareResult, PaymentQuote, PharmacyOrderQuote
 
 
 AGENT_NAME = "careloop-orchestrator"
@@ -68,6 +68,11 @@ class OrchestratorSession:
     case_id: str
     last_route: str = "clarify"
     last_text: str = ""
+    last_paid_route: str | None = None
+    last_paid_fingerprint: str | None = None
+    last_appointment_search: AppointmentSearchQuote | None = None
+    last_otc_order: PharmacyOrderQuote | None = None
+    completed_payment_references: set[str] = field(default_factory=set)
     timeline: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time)
 
@@ -97,6 +102,12 @@ def _session(sender: str) -> OrchestratorSession:
     created = OrchestratorSession(case_id=make_case_id("careloop"))
     ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = created
     return created
+
+
+def _add_timeline(session: OrchestratorSession, event: str) -> None:
+    if session.timeline and session.timeline[-1] == event:
+        return
+    session.timeline.append(event)
 
 
 def _model_dump(model) -> dict[str, Any]:
@@ -221,6 +232,34 @@ def _is_timeline_request(text: str) -> bool:
     return any(term in normalized for term in ["timeline", "status", "what happened", "summary so far"])
 
 
+def _is_result_followup(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    if normalized.startswith("@"):
+        parts = normalized.split(maxsplit=1)
+        normalized = parts[1] if len(parts) > 1 else ""
+    followup_terms = [
+        "closest",
+        "nearest",
+        "location",
+        "where",
+        "which one",
+        "best one",
+        "first one",
+        "address",
+        "phone",
+        "call",
+        "book",
+        "booking link",
+        "link",
+        "cost",
+        "price",
+        "hours",
+        "pickup",
+        "delivery",
+    ]
+    return any(term in normalized for term in followup_terms)
+
+
 def _is_short_followup(text: str) -> bool:
     normalized = " ".join(text.lower().split())
     if normalized.startswith("@"):
@@ -242,6 +281,12 @@ def _is_short_followup(text: str) -> bool:
             "shorter",
             "link",
             "ready",
+            "closest",
+            "nearest",
+            "location",
+            "where",
+            "address",
+            "phone",
         ]
     )
 
@@ -257,7 +302,11 @@ def _intro_message() -> str:
 def _format_timeline(session: OrchestratorSession) -> str:
     if not session.timeline:
         return "CareLoop timeline is empty so far."
-    lines = "\n".join(f"{index}. {event}" for index, event in enumerate(session.timeline[-8:], start=1))
+    compact_events: list[str] = []
+    for event in session.timeline:
+        if event not in compact_events:
+            compact_events.append(event)
+    lines = "\n".join(f"{index}. {event}" for index, event in enumerate(compact_events[-8:], start=1))
     return f"CareLoop timeline\nCase: {session.case_id}\n\n{lines}"
 
 
@@ -277,7 +326,7 @@ def _specialist_handle(route: str) -> str:
 
 def _paid_handoff(route: str, text: str, session: OrchestratorSession, reason: str) -> str:
     quote = _build_paid_quote(route, CareRequest(case_id=session.case_id, user_id="preview", text=text))
-    session.timeline.append("Payment requested")
+    _add_timeline(session, "Payment requested")
     return _format_paid_payment_prompt(route, CareRequest(case_id=session.case_id, user_id="preview", text=text), quote, session)
 
 
@@ -301,6 +350,68 @@ def _format_paid_payment_prompt(route: str, request: CareRequest, quote: Payment
         f"To start the live search, please approve the {quote.amount} FET CareLoop service fee.\n\n"
         "After payment, I’ll show the online and pickup options I can verify."
     )
+
+
+def _answer_from_appointment_context(text: str, search: AppointmentSearchQuote) -> str:
+    option = search.selected_option or (search.options[0] if search.options else None)
+    if option is None:
+        return "I don’t have a saved appointment option from the last search yet."
+
+    normalized = " ".join(text.lower().split())
+    if any(term in normalized for term in ["closest", "nearest", "location", "where", "which one", "best one"]):
+        details = [
+            f"The closest/best option from the results I found is {option.provider_name}.",
+            f"Location: {option.location}",
+        ]
+        if option.earliest_available and option.earliest_available != "availability not published":
+            details.append(f"Availability: {option.earliest_available}")
+        if option.phone:
+            details.append(f"Phone: {option.phone}")
+        details.append(f"Booking link: {option.booking_url}")
+        if option.notes:
+            details.append(f"Note: {option.notes}")
+        return "\n".join(details)
+
+    if "phone" in normalized or "call" in normalized:
+        return f"{option.provider_name}: {option.phone or 'phone not published'}. Booking link: {option.booking_url}"
+
+    if "link" in normalized or "book" in normalized:
+        return f"Use this booking/search link for {option.provider_name}: {option.booking_url}"
+
+    if "cost" in normalized or "price" in normalized:
+        return f"{option.provider_name} listed cost as: {option.estimated_cost}. Confirm final cost and insurance coverage with the provider."
+
+    return (
+        f"From the saved search, I’d start with {option.provider_name} at {option.location}. "
+        f"Booking link: {option.booking_url}"
+    )
+
+
+def _answer_from_otc_context(text: str, order: PharmacyOrderQuote) -> str:
+    normalized = " ".join(text.lower().split())
+    if any(term in normalized for term in ["closest", "nearest", "location", "pickup", "where"]):
+        first = (order.nearby_pharmacies or [None])[0]
+        if first:
+            return (
+                f"The closest pickup location from the saved search list is:\n{first}\n\n"
+                "Please confirm shelf availability with the store before going."
+            )
+        return "I don’t have a saved nearby pickup location from the last search."
+    if "price" in normalized or "cost" in normalized:
+        return f"The saved online quote was {order.subtotal_usd} for {order.product.name} from {order.product.price_source}."
+    return format_otc_order_preview(order)
+
+
+def _answer_saved_followup(session: OrchestratorSession, text: str) -> str | None:
+    if session.last_appointment_search is not None and (
+        session.last_paid_route == APPOINTMENT_AGENT_NAME or _is_result_followup(text)
+    ):
+        return _answer_from_appointment_context(text, session.last_appointment_search)
+    if session.last_otc_order is not None and (
+        session.last_paid_route == PHARMACY_ASSISTANT_AGENT_NAME or _is_result_followup(text)
+    ):
+        return _answer_from_otc_context(text, session.last_otc_order)
+    return None
 
 
 def _payment_card_content(route: str, quote: PaymentQuote) -> str:
@@ -360,6 +471,21 @@ async def _begin_paid_work(
     session: OrchestratorSession,
 ) -> str | None:
     fingerprint = _request_fingerprint(request, route)
+    if (
+        session.last_paid_route == route
+        and session.last_paid_fingerprint == fingerprint
+        and session.last_appointment_search is not None
+        and route == APPOINTMENT_AGENT_NAME
+    ):
+        return format_appointment_search_preview(session.last_appointment_search)
+    if (
+        session.last_paid_route == route
+        and session.last_paid_fingerprint == fingerprint
+        and session.last_otc_order is not None
+        and route == PHARMACY_ASSISTANT_AGENT_NAME
+    ):
+        return format_otc_order_preview(session.last_otc_order)
+
     pending = _load_pending_by_sender(ctx, sender)
     if pending:
         if _pending_requires_refresh(pending, fingerprint):
@@ -380,7 +506,7 @@ async def _begin_paid_work(
         request_version=PAYMENT_REQUEST_VERSION,
     )
     _store_pending(ctx, pending)
-    session.timeline.append("Payment requested")
+    _add_timeline(session, "Payment requested")
     await _send_payment_request(ctx, sender, route, quote)
     return _format_paid_payment_prompt(route, request, quote, session)
 
@@ -399,14 +525,22 @@ def _complete_paid_work(pending: PendingOrchestratorPayment, session: Orchestrat
     request = pending.request
     if pending.route == APPOINTMENT_AGENT_NAME:
         search = build_appointment_search_quote(request, pending.quote)
-        session.timeline.append("Appointment search completed after FET payment")
+        session.last_paid_route = pending.route
+        session.last_paid_fingerprint = pending.request_fingerprint
+        session.last_appointment_search = search
+        session.last_otc_order = None
+        _add_timeline(session, "Appointment search completed after FET payment")
         return (
             f"{format_appointment_search_preview(search)}\n\n"
             f"{_format_timeline(session)}"
         )
 
     order = build_otc_order_quote(request, pending.quote)
-    session.timeline.append("OTC pharmacy search completed after FET payment")
+    session.last_paid_route = pending.route
+    session.last_paid_fingerprint = pending.request_fingerprint
+    session.last_otc_order = order
+    session.last_appointment_search = None
+    _add_timeline(session, "OTC pharmacy search completed after FET payment")
     return (
         f"{format_otc_order_preview(order)}\n\n"
         f"{_format_timeline(session)}"
@@ -419,14 +553,17 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         return _intro_message()
     if _is_timeline_request(text):
         return _format_timeline(session)
+    if _is_result_followup(text):
+        saved_answer = _answer_saved_followup(session, text)
+        if saved_answer:
+            return saved_answer
 
     emergency_reason = triage_emergency_reason(text)
     if emergency_reason:
-        session.timeline.append(f"Emergency stop: {emergency_reason}")
+        _add_timeline(session, f"Emergency stop: {emergency_reason}")
         return (
             f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
-            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care.\n\n"
-            f"{_format_timeline(session)}"
+            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
         )
 
     combined_text = f"{session.last_text}\nFollow-up detail: {text}" if session.last_text and _is_short_followup(text) else text
@@ -434,7 +571,7 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
     route = decision["route"]
     session.last_route = route
     session.last_text = combined_text
-    session.timeline.append(f"Triage route: {route} ({decision['confidence']})")
+    _add_timeline(session, f"Triage route: {route} ({decision['confidence']})")
 
     request = CareRequest(case_id=session.case_id, user_id=sender, text=combined_text)
     if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
@@ -443,23 +580,22 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         return await _begin_paid_work(ctx, sender, route, request, session)
 
     if route == "careloop-orchestrator":
-        session.timeline.append("Prescription-readiness flow held for orchestrator context")
+        _add_timeline(session, "Prescription-readiness flow held for orchestrator context")
         return (
             "CareLoop can coordinate prescription readiness, but the standalone prescription status connector is still mocked.\n\n"
-            "For the demo, I’ll keep this as an orchestrator-owned timeline item instead of asking the older adult to know hidden e-prescription details.\n\n"
-            f"{_format_timeline(session)}"
+            "For the demo, I’ll keep this as an orchestrator-owned timeline item instead of asking the older adult to know hidden e-prescription details."
         )
 
     if route == "clarify":
-        session.timeline.append("Clarification requested")
+        _add_timeline(session, "Clarification requested")
         return (
             "I need one detail before coordinating this.\n\n"
-            "Is this about a prescription, OTC medicine, an appointment, a caregiver update, or a medication reminder?\n\n"
-            f"{_format_timeline(session)}"
+            "Is this about a prescription, OTC medicine, an appointment, a caregiver update, or a medication reminder?"
         )
 
     result = _local_result(route, request)
-    session.timeline.extend(result.timeline_events or [])
+    for event in result.timeline_events or []:
+        _add_timeline(session, event)
     next_actions = "\n".join(f"- {action}" for action in result.next_actions)
     return (
         f"CareLoop handled this with {_specialist_handle(route)}.\n\n"
@@ -475,14 +611,17 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
         return _intro_message()
     if _is_timeline_request(text):
         return _format_timeline(session)
+    if _is_result_followup(text):
+        saved_answer = _answer_saved_followup(session, text)
+        if saved_answer:
+            return saved_answer
 
     emergency_reason = triage_emergency_reason(text)
     if emergency_reason:
-        session.timeline.append(f"Emergency stop: {emergency_reason}")
+        _add_timeline(session, f"Emergency stop: {emergency_reason}")
         return (
             f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
-            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care.\n\n"
-            f"{_format_timeline(session)}"
+            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
         )
 
     combined_text = f"{session.last_text}\nFollow-up detail: {text}" if session.last_text and _is_short_followup(text) else text
@@ -490,30 +629,29 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
     route = decision["route"]
     session.last_route = route
     session.last_text = combined_text
-    session.timeline.append(f"Triage route: {route} ({decision['confidence']})")
+    _add_timeline(session, f"Triage route: {route} ({decision['confidence']})")
 
     request = CareRequest(case_id=session.case_id, user_id=sender, text=combined_text)
     if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
         return _paid_handoff(route, combined_text, session, decision["rationale"])
 
     if route == "careloop-orchestrator":
-        session.timeline.append("Prescription-readiness flow held for orchestrator context")
+        _add_timeline(session, "Prescription-readiness flow held for orchestrator context")
         return (
             "CareLoop can coordinate prescription readiness, but the standalone prescription status connector is still mocked.\n\n"
-            "For the demo, I’ll keep this as an orchestrator-owned timeline item instead of asking the older adult to know hidden e-prescription details.\n\n"
-            f"{_format_timeline(session)}"
+            "For the demo, I’ll keep this as an orchestrator-owned timeline item instead of asking the older adult to know hidden e-prescription details."
         )
 
     if route == "clarify":
-        session.timeline.append("Clarification requested")
+        _add_timeline(session, "Clarification requested")
         return (
             "I need one detail before coordinating this.\n\n"
-            "Is this about a prescription, OTC medicine, an appointment, a caregiver update, or a medication reminder?\n\n"
-            f"{_format_timeline(session)}"
+            "Is this about a prescription, OTC medicine, an appointment, a caregiver update, or a medication reminder?"
         )
 
     result = _local_result(route, request)
-    session.timeline.extend(result.timeline_events or [])
+    for event in result.timeline_events or []:
+        _add_timeline(session, event)
     next_actions = "\n".join(f"- {action}" for action in result.next_actions)
     return (
         f"CareLoop handled this with {_specialist_handle(route)}.\n\n"
@@ -537,7 +675,7 @@ async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
 @care_proto.on_message(CareResult)
 async def handle_care_result(ctx: Context, sender: str, msg: CareResult):
     session = _session(sender)
-    session.timeline.append(f"Specialist result received: {msg.agent_name} ({msg.status})")
+    _add_timeline(session, f"Specialist result received: {msg.agent_name} ({msg.status})")
     ctx.logger.info(f"{AGENT_NAME}: received specialist result from {sender}: {msg.status}")
 
 
@@ -564,7 +702,16 @@ async def handle_payment_commit(ctx: Context, sender: str, msg: CommitPayment):
         return
 
     session = _session(pending.original_sender)
-    session.timeline.append(f"FET payment completed: {pending.quote.amount} {pending.quote.currency}")
+    if pending.quote.reference in session.completed_payment_references:
+        await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id or pending.quote.reference))
+        if pending.route == APPOINTMENT_AGENT_NAME and session.last_appointment_search is not None:
+            await ctx.send(pending.original_sender, create_text_chat(format_appointment_search_preview(session.last_appointment_search)))
+        elif pending.route == PHARMACY_ASSISTANT_AGENT_NAME and session.last_otc_order is not None:
+            await ctx.send(pending.original_sender, create_text_chat(format_otc_order_preview(session.last_otc_order)))
+        return
+
+    session.completed_payment_references.add(pending.quote.reference)
+    _add_timeline(session, f"FET payment completed: {pending.quote.amount} {pending.quote.currency}")
     result_text = _complete_paid_work(pending, session)
     _remove_pending(ctx, pending)
     await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id or pending.quote.reference))
@@ -580,7 +727,7 @@ async def handle_payment_reject(ctx: Context, sender: str, msg: RejectPayment):
         return
 
     session = _session(pending.original_sender)
-    session.timeline.append(f"FET payment rejected for {pending.route}")
+    _add_timeline(session, f"FET payment rejected for {pending.route}")
     _remove_pending(ctx, pending)
     reason = msg.reason or "payment rejected"
     await ctx.send(

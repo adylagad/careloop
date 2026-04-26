@@ -38,7 +38,7 @@ from domain import (  # noqa: E402
     triage_request,
     triage_route,
 )
-from models import CareRequest, PaymentQuote, PrescriptionDocumentRequest  # noqa: E402
+from models import AppointmentOption, AppointmentSearchQuote, CareRequest, PaymentQuote, PrescriptionDocumentRequest  # noqa: E402
 from appointment_agent import (  # noqa: E402
     APPOINTMENT_CONTEXT_BY_SENDER,
     PAYMENT_REQUEST_VERSION as APPOINTMENT_PAYMENT_REQUEST_VERSION,
@@ -55,7 +55,7 @@ from pharmacy_agent import PAYMENT_REQUEST_VERSION, PendingOrderPayment, _load_p
 from pharmacy_data import _parse_browser_price_text  # noqa: E402
 from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat_response  # noqa: E402
 from triage_agent import TRIAGE_CONTEXT_BY_SENDER, triage_chat_response  # noqa: E402
-from orchestrator_agent import ORCHESTRATOR_CONTEXT_BY_SENDER, orchestrator_chat_response  # noqa: E402
+from orchestrator_agent import ORCHESTRATOR_CONTEXT_BY_SENDER, OrchestratorSession, orchestrator_chat_response  # noqa: E402
 
 
 class AgentLogicTests(unittest.TestCase):
@@ -522,7 +522,43 @@ class AgentLogicTests(unittest.TestCase):
         response = orchestrator_chat_response(None, "orchestrator-emergency-user", "My dad has chest pain")
 
         self.assertIn("Call 911", response)
-        self.assertIn("Emergency stop", response)
+        self.assertNotIn("CareLoop timeline", response)
+
+    def test_orchestrator_answers_followup_from_saved_appointment_search(self):
+        sender = "orchestrator-followup-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+        session = OrchestratorSession(case_id="careloop-test")
+        ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = session
+        option = AppointmentOption(
+            provider_name="USC Imaging Center",
+            specialty="imaging center",
+            location="1234 Jefferson Blvd, Los Angeles, CA",
+            phone="213-555-0100",
+            booking_url="https://example.com/book",
+            source="test",
+        )
+        session.last_paid_route = "careloop-appointment-assistant"
+        session.last_appointment_search = AppointmentSearchQuote(
+            case_id=session.case_id,
+            specialty="imaging center",
+            location="USC Village",
+            options=[option],
+            selected_option=option,
+            data_sources=["test"],
+            status="booking_handoff_ready",
+            payment_quote=PaymentQuote(
+                case_id=session.case_id,
+                service_name="CareLoop Appointment Search",
+                amount="0.1",
+                reference="test-ref",
+            ),
+        )
+
+        response = orchestrator_chat_response(None, sender, "can you give me the closest location")
+
+        self.assertIn("USC Imaging Center", response)
+        self.assertIn("1234 Jefferson Blvd", response)
+        self.assertNotIn("I need one detail", response)
 
     def test_prescription_and_orchestrator_outputs(self):
         request = self.make_request("Explain lisinopril 10mg and book a doctor")
