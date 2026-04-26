@@ -79,6 +79,29 @@ def _is_followup(text: str) -> bool:
     return any(term in normalized for term in followup_terms)
 
 
+def _is_greeting_or_help(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    cleaned = normalized
+    if cleaned.startswith("@"):
+        parts = cleaned.split(maxsplit=1)
+        cleaned = parts[1] if len(parts) > 1 else ""
+    return cleaned in {"hi", "hello", "hey", "help", "what can you do", "what do you do"}
+
+
+def _intro_message() -> str:
+    return (
+        "Hi, I’m CareLoop Caregiver Notifier. I turn care updates into messages you can send to a family caregiver.\n\n"
+        "I can write:\n"
+        "- short SMS updates\n"
+        "- email summaries\n"
+        "- urgent caregiver alerts\n"
+        "- follow-up rewrites like “make it shorter” or “send it to my son instead”\n\n"
+        "Try:\n"
+        "`Write an SMS to my daughter that Dad's allergy medicine checkout is ready.`\n"
+        "`Write an email to my son that Mom's appointment is booked tomorrow at 10:30 AM.`"
+    )
+
+
 def _merge_context(previous: dict[str, str], text: str) -> dict[str, str]:
     merged = dict(previous)
     updates = _context_from_chat_text(text)
@@ -129,6 +152,9 @@ def _answer_followup(sender: str, text: str, previous: dict[str, str]) -> str:
 
 
 def caregiver_chat_response(ctx: Context, sender: str, text: str) -> str:
+    if _is_greeting_or_help(text):
+        return _intro_message()
+
     previous = CAREGIVER_CONTEXT_BY_SENDER.get(sender)
     if previous and _is_followup(text):
         return _answer_followup(sender, text, previous)

@@ -288,6 +288,13 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("Subject:", second)
         self.assertNotEqual(first, second)
 
+    def test_caregiver_chat_greeting_explains_agent(self):
+        response = caregiver_chat_response(None, "caregiver-hi-user", "hi")
+
+        self.assertIn("CareLoop Caregiver Notifier", response)
+        self.assertIn("SMS", response)
+        self.assertNotIn("the patient has a care coordination update", response)
+
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))
 
