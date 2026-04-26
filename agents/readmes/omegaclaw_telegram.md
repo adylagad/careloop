@@ -33,8 +33,9 @@ It supports:
 - Stateful Telegram sessions keyed by chat id.
 - Doctor-office offer -> user confirmation -> Calendar booking.
 - Existing caregiver email draft/send flow.
-- Existing pharmacy/appointment wording, although ASI:One FET payment cards are not
-rendered inside Telegram.
+- FET payment inside Telegram for paid appointment and OTC pharmacy searches,
+  via `/pay` (auto-pay from a demo testnet wallet) and `/paid <tx-hash>`
+  (verify a manual transfer on the Fetch.ai stable testnet).
 
 Run it with:
 
@@ -48,6 +49,11 @@ python agents/telegram_omegaclaw_bridge.py
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_ALLOWED_CHAT_IDS=
 TELEGRAM_POLL_SECONDS=1.5
+
+# Telegram-native FET payment (Fetch.ai stable testnet)
+TELEGRAM_FET_RECIPIENT=fetch1c7l7snugrzcedpqcxvfsxxv05wl7stqkpre0le
+FET_TESTNET_MNEMONIC=
+FET_USE_TESTNET=true
 
 DOCTOR_OFFICE_AGENT_ADDRESS=agent1qwt8klq4hwf4gyw0xwu0w9gta23040nxetz34vcnp9g0lp7spw432m8gu72
 
@@ -148,42 +154,63 @@ that runtime to call the Agentverse agent:
 - Orchestrator address:
   `agent1qgpgqcj5sgdf35atw8fyeytr49g6tnf8s60rgp6hdm5jeen504r22ut73pf`
 
-## Future: FET Payments Inside Telegram
+## FET Payments Inside Telegram
 
-Telegram does not natively render the ASI:One FET Pay/Reject card. That card is an
-ASI:One chat feature that understands Fetch.ai payment protocol messages. For the
-current demo, keep the polished one-click FET card in ASI:One and use Telegram for the
-OmegaClaw-style external-channel orchestration demo.
+Telegram does not natively render the ASI:One FET Pay/Reject card, so the bridge
+drives FET payment directly. When the orchestrator hands off to a paid route
+(appointment search or OTC pharmacy search), the bridge appends a Pay card with
+the recipient wallet, amount, and memo, then accepts two completion paths:
 
-If FET payment is needed directly inside Telegram later, implement one of these flows:
+1. `/pay` — the bridge auto-sends `0.1 FET` on the Fetch.ai stable testnet from
+   the demo wallet (`FET_TESTNET_MNEMONIC` seed phrase) using `cosmpy`, then
+   resumes the live search.
+2. `/paid <tx-hash>` — the user pays from their own wallet (any Fetch.ai stable
+   testnet wallet), then sends the resulting transaction hash. The bridge looks
+   the transaction up on chain, confirms it landed, and resumes the live search.
 
-1. Payment link flow.
-   - Bot sends a Fetch wallet/payment URL for the service fee.
-   - User pays from their wallet.
-   - Bot asks for or detects the transaction reference.
-   - CareLoop verifies payment before running the paid appointment/pharmacy search.
-   - This is the recommended hackathon-friendly Telegram path.
+The bridge also supports `/payment` to re-show the current Pay card in case the
+user scrolls away from it.
 
-2. Telegram Web App checkout.
-   - Bot opens a small Telegram Web App checkout page.
-   - User connects wallet and pays FET from the web view.
-   - Web app calls back into CareLoop with the payment result.
-   - This is the most polished Telegram-native path, but needs a small hosted web app.
+The orchestrator state machine is the same code path used for ASI:One: the
+bridge calls `telegram_pending_paid_quote()` to derive the route/quote/request
+the orchestrator just queued, settles the payment on-chain, and then calls
+`telegram_complete_paid_work()` to run the same `build_appointment_search_quote`
+or `build_otc_order_quote` work and update the case timeline.
 
-3. Manual testnet transfer.
-   - Bot shows the Dorado/testnet address and amount.
-   - User sends FET manually.
-   - Bot verifies the chain transaction or account balance.
-   - This is fastest to build, but less polished for judging.
+### Configuration
 
-Target behavior:
+```bash
+# Wallet that receives the CareLoop service fee (defaults to the pharmacy seller wallet)
+TELEGRAM_FET_RECIPIENT=fetch1c7l7snugrzcedpqcxvfsxxv05wl7stqkpre0le
+
+# 12 or 24 word seed phrase of a funded stable-testnet wallet, only needed for /pay.
+# Manual /paid <tx-hash> verification works without this.
+FET_TESTNET_MNEMONIC=
+
+FET_USE_TESTNET=true
+```
+
+If `FET_TESTNET_MNEMONIC` is missing or invalid, `/pay` returns a clear error
+and the user is prompted to send FET manually and reply with `/paid <tx-hash>`.
+
+### Demo flow
 
 ```text
-User asks for a paid live search in Telegram.
-CareLoop replies with the service fee and a Pay link.
-User pays FET from wallet.
-CareLoop verifies the payment.
-CareLoop runs the live search and returns the result in Telegram.
+User: Find an MRI scan near USC Village
+Bot:  CareLoop quotes 0.1 FET CareLoop service fee + Pay card (recipient,
+      amount, memo, web wallet link, /pay and /paid instructions).
+User: /pay
+Bot:  FET payment confirmed. Running the CareLoop live search now... <results>
+```
+
+Or:
+
+```text
+User: Find allergy medicine near Westwood for delivery
+Bot:  Quote + Pay card.
+User: <pays from their wallet, copies tx hash>
+User: /paid 0xABC123...
+Bot:  FET payment confirmed. Running the CareLoop live search now... <results>
 ```
 
 ## Track 2 Submission Checklist

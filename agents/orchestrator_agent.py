@@ -1222,6 +1222,63 @@ def orchestrator_chat_response(ctx: Context, sender: str, text: str) -> str | No
     return _orchestrator_answer(ctx, sender, text)
 
 
+def telegram_pending_paid_quote(sender: str) -> tuple[str, CareRequest, PaymentQuote] | None:
+    """If the orchestrator's last response to this Telegram sender was a paid handoff
+    that has not been completed yet, return the (route, request, quote) the bridge
+    should drive payment for. Returns None otherwise."""
+    session = ORCHESTRATOR_CONTEXT_BY_SENDER.get(sender)
+    if session is None:
+        return None
+    if session.last_route not in {APPOINTMENT_AGENT_NAME, PHARMACY_ASSISTANT_AGENT_NAME}:
+        return None
+    request_text = session.last_text or ""
+    if not request_text:
+        return None
+    request = CareRequest(case_id=session.case_id, user_id=sender, text=request_text)
+    fingerprint = _request_fingerprint(request, session.last_route)
+    if (
+        session.last_paid_route == session.last_route
+        and session.last_paid_fingerprint == fingerprint
+    ):
+        return None
+    quote = _build_paid_quote(session.last_route, request)
+    return session.last_route, request, quote
+
+
+def telegram_complete_paid_work(
+    sender: str,
+    route: str,
+    request: CareRequest,
+    quote: PaymentQuote,
+    transaction_id: str,
+) -> str:
+    """Drive the orchestrator's paid-work completion from the Telegram bridge once
+    the bridge has settled the FET payment on the Fetch.ai testnet."""
+    session = _session(sender)
+    fingerprint = _request_fingerprint(request, route)
+    pending = PendingOrchestratorPayment(
+        original_sender=sender,
+        request=request,
+        route=route,
+        quote=quote,
+        request_fingerprint=fingerprint,
+        created_at=time(),
+        request_version=PAYMENT_REQUEST_VERSION,
+    )
+    if quote.reference in session.completed_payment_references:
+        if route == APPOINTMENT_AGENT_NAME and session.last_appointment_search is not None:
+            return format_appointment_search_preview(session.last_appointment_search)
+        if route == PHARMACY_ASSISTANT_AGENT_NAME and session.last_otc_order is not None:
+            return format_otc_order_preview(session.last_otc_order)
+    session.completed_payment_references.add(quote.reference)
+    short_tx = (transaction_id or "telegram-fet")[:16]
+    _add_timeline(
+        session,
+        f"FET payment completed via Telegram: {quote.amount} {quote.currency} (tx {short_tx})",
+    )
+    return _complete_paid_work(pending, session)
+
+
 @care_proto.on_message(CareRequest)
 async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
     await ctx.send(sender, orchestrate_care(msg))
