@@ -809,6 +809,15 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(decision["confidence"], "high")
         mock_asi.assert_called_once()
 
+    def test_orchestrator_saved_followup_is_only_for_short_followups(self):
+        self.assertTrue(orchestrator_agent._should_answer_saved_followup_before_llm("closest location"))
+        self.assertTrue(orchestrator_agent._should_answer_saved_followup_before_llm("can you give me the closest location"))
+        self.assertFalse(
+            orchestrator_agent._should_answer_saved_followup_before_llm(
+                "can you write an email to my caretaker about my current situation"
+            )
+        )
+
     def test_prescription_and_orchestrator_outputs(self):
         request = self.make_request("Explain lisinopril 10mg and book a doctor")
         prescription = explain_prescription(request)

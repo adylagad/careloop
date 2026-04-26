@@ -329,6 +329,9 @@ def _is_generic_saved_result_followup(text: str) -> bool:
     normalized = _message_text(text).lower()
     if not _is_result_followup(text):
         return False
+    words = normalized.split()
+    if len(words) > 8:
+        return False
     new_intent_terms = [
         "tylenol",
         "acetaminophen",
@@ -362,6 +365,29 @@ def _is_generic_saved_result_followup(text: str) -> bool:
         "dose",
     ]
     return not any(term in normalized for term in new_intent_terms)
+
+
+def _should_answer_saved_followup_before_llm(text: str) -> bool:
+    normalized = _message_text(text).lower()
+    words = normalized.split()
+    if len(words) > 8:
+        return False
+    saved_followup_phrases = [
+        "closest",
+        "nearest",
+        "closest location",
+        "nearest location",
+        "which one",
+        "best one",
+        "first one",
+        "address",
+        "phone",
+        "link",
+        "booking link",
+        "cost",
+        "price",
+    ]
+    return any(phrase in normalized for phrase in saved_followup_phrases)
 
 
 def _direct_current_intent(text: str) -> dict[str, str] | None:
@@ -1027,7 +1053,7 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         for event in result.timeline_events or []:
             _add_timeline(session, event)
         return _smart_caregiver_draft(sender, session, text, result)
-    if _is_generic_saved_result_followup(text):
+    if _should_answer_saved_followup_before_llm(text):
         saved_answer = _answer_saved_followup(session, text)
         if saved_answer:
             return saved_answer
@@ -1072,7 +1098,7 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
         for event in result.timeline_events or []:
             _add_timeline(session, event)
         return _smart_caregiver_draft(sender, session, text, result)
-    if _is_generic_saved_result_followup(text):
+    if _should_answer_saved_followup_before_llm(text):
         saved_answer = _answer_saved_followup(session, text)
         if saved_answer:
             return saved_answer
