@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +37,7 @@ from domain import (  # noqa: E402
 from models import CareRequest, PaymentQuote, PrescriptionDocumentRequest  # noqa: E402
 from appointment_agent import APPOINTMENT_CONTEXT_BY_SENDER, appointment_chat_response  # noqa: E402
 from appointment_data import parse_browser_appointment_text  # noqa: E402
+from browser_cache import browser_cache_key, cached_browser_call  # noqa: E402
 from caregiver_agent import CAREGIVER_CONTEXT_BY_SENDER, caregiver_chat_response  # noqa: E402
 from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  # noqa: E402
 from pharmacy_agent import PAYMENT_REQUEST_VERSION, PendingOrderPayment, _load_pending_by_sender, _pending_payment_message, _pending_requires_refresh, _request_fingerprint, _store_pending, pending_by_sender, pending_orders  # noqa: E402
@@ -336,6 +338,46 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(quote.amount, APPOINTMENT_SERVICE_FEE_FET)
         self.assertEqual(quote.payment_method, "fet_direct")
         self.assertEqual(unpaid.status, "payment_required")
+
+    def test_browser_cache_dedupes_equivalent_payloads(self):
+        calls = {"count": 0}
+
+        def loader():
+            calls["count"] += 1
+            return [{"value": "cached"}]
+
+        with NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            cache_path = handle.name
+
+        try:
+            Path(cache_path).write_text("{}", encoding="utf-8")
+            with patch.dict(os.environ, {"CARELOOP_BROWSER_CACHE_PATH": cache_path}):
+                import browser_cache
+
+                browser_cache._memory_cache = None
+                first, first_cached = cached_browser_call(
+                    namespace="test",
+                    payload={"Location": "USC Village", "Need": "Primary Care"},
+                    loader=loader,
+                    ttl_seconds=3600,
+                )
+                second, second_cached = cached_browser_call(
+                    namespace="test",
+                    payload={"Need": " primary   care ", "Location": "usc village"},
+                    loader=loader,
+                    ttl_seconds=3600,
+                )
+
+            self.assertFalse(first_cached)
+            self.assertTrue(second_cached)
+            self.assertEqual(first, second)
+            self.assertEqual(calls["count"], 1)
+            self.assertEqual(
+                browser_cache_key("test", {"Location": "USC Village", "Need": "Primary Care"}),
+                browser_cache_key("test", {"Need": " primary   care ", "Location": "usc village"}),
+            )
+        finally:
+            Path(cache_path).unlink(missing_ok=True)
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))

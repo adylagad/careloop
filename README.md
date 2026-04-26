@@ -67,6 +67,9 @@ Walgreens, Target, Amazon, and Cost Plus Drugs. If Browser Use is unavailable, i
 back to the Cost Plus Drugs public API for live quoted online prices and OpenStreetMap
 Nominatim/Overpass for nearby pharmacy locations. Orchestrator-owned prescription
 readiness still needs mocking until a pharmacy/EHR integration is available.
+Browser Use results are cached by normalized medicine/location search so repeat prompts
+do not spend credits or wait for the same browser task again. Configure with
+`CARELOOP_BROWSER_CACHE_TTL_SECONDS` and `CARELOOP_BROWSER_CACHE_PATH`.
 
 Example ASI:One prompts:
 
@@ -125,6 +128,8 @@ such as Zocdoc, Healthgrades, provider sites, urgent care pages, and Google Busi
 profiles. If Browser Use is unavailable, it falls back to the official CMS NPPES public
 provider registry plus booking handoff links. It shows cost and earliest availability
 only when the live source publishes them.
+Browser Use appointment searches share the same normalized cache/dedupe layer as the
+pharmacy agent.
 
 Example ASI:One prompts:
 

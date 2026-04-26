@@ -7,6 +7,7 @@ from threading import Thread
 import httpx
 from dotenv import load_dotenv
 
+from browser_cache import cached_browser_call
 from models import OTCPriceOption, OTCProduct
 
 
@@ -147,7 +148,7 @@ def _run_async_in_thread(coro):
     thread.start()
     thread.join(timeout=int(os.getenv("PHARMACY_BROWSER_PRICE_TIMEOUT_SECONDS", "210")))
     if thread.is_alive() or error is not None:
-        return []
+        return None
     return result or []
 
 
@@ -158,7 +159,26 @@ def browseruse_price_options(product: OTCProduct, address_hint: str) -> list[OTC
         import browser_use_sdk.v3  # noqa: F401
     except Exception:
         return []
-    return _run_async_in_thread(_fetch_browser_price_options_async(product, address_hint))
+
+    def loader() -> list[dict] | None:
+        options = _run_async_in_thread(_fetch_browser_price_options_async(product, address_hint))
+        if options is None:
+            return None
+        return [option.dict() for option in options]
+
+    cached_value, _ = cached_browser_call(
+        namespace="pharmacy-price-options-v1",
+        payload={
+            "active_ingredient": product.active_ingredient,
+            "strength": product.strength,
+            "package_size": product.package_size,
+            "address_hint": address_hint,
+            "limit": BROWSER_PRICE_LIMIT,
+            "model": BROWSER_PRICE_MODEL,
+        },
+        loader=loader,
+    )
+    return [OTCPriceOption(**item) for item in (cached_value or [])]
 
 
 def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

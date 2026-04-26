@@ -8,6 +8,7 @@ from urllib.parse import quote_plus
 import httpx
 from dotenv import load_dotenv
 
+from browser_cache import cached_browser_call
 from models import AppointmentOption
 from pharmacy_data import USER_AGENT, geocode_address
 
@@ -320,7 +321,7 @@ def _run_async_in_thread(coro):
     thread.start()
     thread.join(timeout=int(os.getenv("APPOINTMENT_BROWSER_TIMEOUT_SECONDS", "210")))
     if thread.is_alive() or error is not None:
-        return []
+        return None
     return result or []
 
 
@@ -336,9 +337,28 @@ def browseruse_appointment_options(
         import browser_use_sdk.v3  # noqa: F401
     except Exception:
         return []
-    return _run_async_in_thread(
-        _fetch_browser_appointment_options_async(specialty, location, insurance, urgency)
+
+    def loader() -> list[dict] | None:
+        options = _run_async_in_thread(
+            _fetch_browser_appointment_options_async(specialty, location, insurance, urgency)
+        )
+        if options is None:
+            return None
+        return [option.dict() for option in options]
+
+    cached_value, _ = cached_browser_call(
+        namespace="appointment-options-v1",
+        payload={
+            "specialty": specialty,
+            "location": location,
+            "insurance": insurance or "",
+            "urgency": urgency,
+            "limit": BROWSER_APPOINTMENT_LIMIT,
+            "model": BROWSER_APPOINTMENT_MODEL,
+        },
+        loader=loader,
     )
+    return [AppointmentOption(**item) for item in (cached_value or [])]
 
 
 def appointment_options(specialty: str, location: str, insurance: str | None, urgency: str) -> tuple[list[AppointmentOption], list[str]]:
