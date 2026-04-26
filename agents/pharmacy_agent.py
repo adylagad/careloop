@@ -13,9 +13,12 @@ from uagents_core.contrib.protocols.payment import (
 )
 
 from chat_protocol import create_chat_protocol
+from chat_protocol import create_text_chat
 from config import create_careloop_agent, env_int
 from domain import (
     build_otc_order_quote,
+    build_otc_service_payment_quote,
+    format_otc_payment_prompt,
     format_otc_order_preview,
     is_otc_order_intent,
     is_pharmacy_status_intent,
@@ -25,7 +28,7 @@ from domain import (
     result_to_text,
 )
 from llm import asi_chat_completion
-from models import CareRequest, CareResult, PharmacyOrderQuote
+from models import CareRequest, CareResult, PaymentQuote, PharmacyOrderQuote
 from pharmacy_data import nearby_pharmacies
 
 
@@ -52,7 +55,6 @@ agent = create_careloop_agent(
 
 care_proto = Protocol(name="CareLoopPharmacyAssistantProtocol", version="0.1.0")
 payment_proto = Protocol(spec=payment_protocol_spec, role="seller")
-pending_orders: dict[str, tuple[str, CareRequest, PharmacyOrderQuote]] = {}
 PHARMACY_CONTEXT_BY_SENDER: dict[str, PharmacyOrderQuote] = {}
 MAX_PHARMACY_CONTEXTS = 100
 
@@ -61,6 +63,17 @@ MAX_PHARMACY_CONTEXTS = 100
 class PickupAnswer:
     address: str
     pharmacies: list[str]
+
+
+@dataclass
+class PendingOrderPayment:
+    original_sender: str
+    request: CareRequest
+    quote: PaymentQuote
+    response_channel: str
+
+
+pending_orders: dict[str, PendingOrderPayment] = {}
 
 
 def _context_from_chat_text(text: str) -> dict[str, str]:
@@ -133,6 +146,31 @@ def _fallback_followup_answer(question: str, order: PharmacyOrderQuote) -> str:
     )
 
 
+async def _send_otc_payment_request(ctx: Context, sender: str, quote: PaymentQuote) -> None:
+    await ctx.send(
+        sender,
+        RequestPayment(
+            accepted_funds=[
+                Funds(
+                    amount=quote.amount,
+                    currency=quote.currency,
+                    payment_method=quote.payment_method,
+                )
+            ],
+            recipient=os.getenv("PHARMACY_ASSISTANT_FET_WALLET_ADDRESS", ctx.agent.address),
+            deadline_seconds=300,
+            reference=quote.reference,
+            description=f"{quote.service_name} service fee",
+            metadata={
+                "case_id": quote.case_id,
+                "agent": AGENT_NAME,
+                "service_name": quote.service_name,
+                "payment_gate": "before_live_price_search",
+            },
+        ),
+    )
+
+
 def _answer_followup(sender: str, question: str, order: PharmacyOrderQuote) -> str:
     pickup = _pickup_answer_from_followup(question, order)
     system_prompt = (
@@ -197,9 +235,41 @@ def pharmacy_chat_response(ctx: Context, sender: str, text: str) -> str:
             "`Find the best allergy medicine near Westwood` or `Order Tylenol for delivery`."
         )
 
-    order = build_otc_order_quote(request)
-    _remember_order(sender, order)
-    return format_otc_order_preview(order)
+    quote = build_otc_service_payment_quote(request)
+    return format_otc_payment_prompt(request, quote)
+
+
+async def pharmacy_chat_handler(ctx: Context, sender: str, text: str) -> str:
+    normalized = " ".join(text.lower().split())
+    if normalized in {"hi", "hello", "hey", "help", "what can you do"}:
+        return pharmacy_chat_response(ctx, sender, text)
+
+    if is_pharmacy_status_intent(text):
+        return pharmacy_chat_response(ctx, sender, text)
+
+    existing_order = PHARMACY_CONTEXT_BY_SENDER.get(sender)
+    if existing_order and not is_otc_order_intent(text):
+        return _answer_followup(sender, text, existing_order)
+
+    request = CareRequest(
+        case_id=make_case_id("chat-pharmacy"),
+        user_id=sender,
+        text=text,
+        context=_context_from_chat_text(text),
+    )
+
+    if not is_otc_order_intent(text):
+        return pharmacy_chat_response(ctx, sender, text)
+
+    quote = build_otc_service_payment_quote(request)
+    pending_orders[quote.reference] = PendingOrderPayment(
+        original_sender=sender,
+        request=request,
+        quote=quote,
+        response_channel="chat",
+    )
+    await _send_otc_payment_request(ctx, sender, quote)
+    return format_otc_payment_prompt(request, quote)
 
 
 @care_proto.on_message(CareRequest)
@@ -221,45 +291,32 @@ async def handle_care_request(ctx: Context, sender: str, msg: CareRequest):
         )
         return
 
-    order = build_otc_order_quote(msg)
-    _remember_order(sender, order)
-    quote = order.payment_quote
-    pending_orders[quote.reference] = (sender, msg, order)
-    ctx.logger.info(f"{AGENT_NAME}: requesting {quote.amount} {quote.currency} for OTC order from {sender}")
-    await ctx.send(
-        sender,
-        RequestPayment(
-            accepted_funds=[
-                Funds(
-                    amount=quote.amount,
-                    currency=quote.currency,
-                    payment_method=quote.payment_method,
-                )
-            ],
-            recipient=os.getenv("PHARMACY_ASSISTANT_FET_WALLET_ADDRESS", ctx.agent.address),
-            deadline_seconds=300,
-            reference=quote.reference,
-            description=f"{quote.service_name} service fee",
-            metadata={
-                "case_id": quote.case_id,
-                "agent": AGENT_NAME,
-                "service_name": quote.service_name,
-                "product": order.product.name,
-                "provider": order.product.provider,
-            },
-        ),
+    quote = build_otc_service_payment_quote(msg)
+    pending_orders[quote.reference] = PendingOrderPayment(
+        original_sender=sender,
+        request=msg,
+        quote=quote,
+        response_channel="care",
     )
+    ctx.logger.info(f"{AGENT_NAME}: requesting {quote.amount} {quote.currency} for OTC order from {sender}")
+    await _send_otc_payment_request(ctx, sender, quote)
 
 
 @payment_proto.on_message(CommitPayment)
 async def handle_payment_commit(ctx: Context, sender: str, msg: CommitPayment):
     reference = msg.reference or ""
-    pending_order = pending_orders.pop(reference, None)
-    if pending_order is not None:
-        original_sender, request, order = pending_order
+    pending_payment = pending_orders.pop(reference, None)
+    if pending_payment is not None:
+        original_sender = pending_payment.original_sender
+        request = pending_payment.request
+        order = build_otc_order_quote(request, pending_payment.quote)
+        _remember_order(original_sender, order)
         result = otc_order_paid_result(request, order)
         await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
-        await ctx.send(original_sender, result)
+        if pending_payment.response_channel == "chat":
+            await ctx.send(original_sender, create_text_chat(format_otc_order_preview(order)))
+        else:
+            await ctx.send(original_sender, result)
         ctx.logger.info(f"{AGENT_NAME}: OTC order payment completed for {reference}")
         return
 
@@ -272,15 +329,20 @@ async def handle_payment_reject(ctx: Context, sender: str, msg: RejectPayment):
     matching_order_reference = next(
         (
             reference
-            for reference, (pending_sender, _, _) in pending_orders.items()
-            if pending_sender == sender
+            for reference, pending in pending_orders.items()
+            if pending.original_sender == sender
         ),
         None,
     )
     if matching_order_reference is not None:
-        _, request, _ = pending_orders.pop(matching_order_reference)
+        pending_payment = pending_orders.pop(matching_order_reference)
+        request = pending_payment.request
         reason = msg.reason or "buyer rejected payment"
-        await ctx.send(sender, otc_order_unpaid_result(request, reason))
+        unpaid = otc_order_unpaid_result(request, reason)
+        if pending_payment.response_channel == "chat":
+            await ctx.send(sender, create_text_chat(unpaid.summary))
+        else:
+            await ctx.send(sender, unpaid)
         ctx.logger.info(f"{AGENT_NAME}: OTC order payment rejected for {matching_order_reference}: {reason}")
         return
 
@@ -298,7 +360,7 @@ async def startup(ctx: Context):
     ctx.logger.info("OmegaClaw skill target: CareLoop Pharmacy Assistant")
 
 
-agent.include(create_chat_protocol(AGENT_NAME, pharmacy_chat_response), publish_manifest=True)
+agent.include(create_chat_protocol(AGENT_NAME, pharmacy_chat_handler), publish_manifest=True)
 agent.include(care_proto, publish_manifest=True)
 agent.include(payment_proto, publish_manifest=True)
 

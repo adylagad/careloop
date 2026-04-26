@@ -51,6 +51,8 @@ after payment, and returns a provider checkout handoff. Amazon does not expose a
 public consumer API for fully automatic checkout, shipping, payment, and purchase
 confirmation, so the real fulfillment handoff is a safe provider checkout URL while the
 agent-owned order/payment behavior is demonstrated through FET.
+The fee is requested before live Browser Use price search or checkout preparation, so
+paid work happens only after a `CommitPayment`.
 The agent also remembers the latest OTC recommendation per ASI:One sender so follow-up
 questions such as "which is nearest to USC Village for pickup?" use the previous medicine
 context instead of starting over.

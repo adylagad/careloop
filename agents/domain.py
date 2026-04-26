@@ -310,11 +310,37 @@ def _quantity_from_text(text: str) -> int:
     return 1
 
 
+def build_otc_service_payment_quote(request: CareRequest) -> PaymentQuote:
+    return PaymentQuote(
+        case_id=request.case_id,
+        service_name="CareLoop OTC Recommendation and Order",
+        amount=OTC_ORDER_SERVICE_FEE_FET,
+        reference=f"careloop-otc-order-{request.case_id}-{uuid4().hex[:8]}",
+    )
+
+
+def format_otc_payment_prompt(request: CareRequest, quote: PaymentQuote) -> str:
+    address_hint = value_from_context(request, "address", value_from_context(request, "location", "Los Angeles, CA"))
+    user_need = _infer_otc_need(request.text)
+    return (
+        "CareLoop Pharmacy Assistant\n\n"
+        f"I can run a live OTC price comparison for {user_need} near {address_hint}.\n\n"
+        "Service fee required before I search live prices and prepare checkout:\n"
+        f"- Amount: {quote.amount} {quote.currency}\n"
+        f"- Method: {quote.payment_method}\n"
+        f"- Reference: {quote.reference}\n\n"
+        "After payment, I will compare online and pickup options, show the prices I can verify, "
+        "recommend the safest reasonable OTC option, and return the checkout handoff.\n\n"
+        "Safety note: this is OTC shopping support, not medical advice. Use the Drug Facts label "
+        "and ask a pharmacist if the patient has other conditions or medicines."
+    )
+
+
 def _usd_to_float(value: str) -> float:
     return float(value.replace("$", "").strip())
 
 
-def build_otc_order_quote(request: CareRequest) -> PharmacyOrderQuote:
+def build_otc_order_quote(request: CareRequest, payment_quote: PaymentQuote | None = None) -> PharmacyOrderQuote:
     ranked = [enrich_product_with_costplus(product) for product in _rank_otc_products(request.text)]
     product = ranked[0]
     quantity = _quantity_from_text(request.text)
@@ -331,13 +357,7 @@ def build_otc_order_quote(request: CareRequest) -> PharmacyOrderQuote:
     offline_price_options = [
         option for option in online_price_options if any(term in option.fulfillment.lower() for term in ["pickup", "coupon"])
     ]
-    reference = f"careloop-otc-order-{request.case_id}-{uuid4().hex[:8]}"
-    quote = PaymentQuote(
-        case_id=request.case_id,
-        service_name="CareLoop OTC Recommendation and Order",
-        amount=OTC_ORDER_SERVICE_FEE_FET,
-        reference=reference,
-    )
+    quote = payment_quote or build_otc_service_payment_quote(request)
 
     return PharmacyOrderQuote(
         case_id=request.case_id,

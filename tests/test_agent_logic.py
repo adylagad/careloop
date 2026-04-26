@@ -1,4 +1,5 @@
 import sys
+import os
 import unittest
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -8,8 +9,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / "agents"
 sys.path.insert(0, str(AGENTS))
+os.environ["BROWSER_USE_API_KEY"] = ""
 
 from domain import (  # noqa: E402
+    _mock_otc_catalog,
     build_otc_order_quote,
     build_pharmacy_fulfillment_status,
     explain_prescription_document,
@@ -26,6 +29,7 @@ from domain import (  # noqa: E402
 )
 from models import CareRequest, PrescriptionDocumentRequest  # noqa: E402
 from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  # noqa: E402
+from pharmacy_data import _parse_browser_price_text  # noqa: E402
 from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat_response  # noqa: E402
 
 
@@ -115,21 +119,48 @@ class AgentLogicTests(unittest.TestCase):
         sender = "otc-followup-user"
         PHARMACY_CONTEXT_BY_SENDER.pop(sender, None)
 
-        first = pharmacy_chat_response(
-            None,
-            sender,
+        request = self.make_request(
             "Find the best allergy medicine near Westwood and order it for delivery",
+            {"location": "Westwood, Los Angeles, CA", "preference": "delivery"},
         )
+        PHARMACY_CONTEXT_BY_SENDER[sender] = build_otc_order_quote(request)
+
         followup = pharmacy_chat_response(
             None,
             sender,
             "which is the nearest store to USC Village where I can collect it? I do not want online",
         )
 
-        self.assertIn("Loratadine", first)
         self.assertIn("USC Village", followup)
         self.assertIn("Loratadine", followup)
         self.assertNotIn("I can help with over-the-counter medicine only", followup)
+
+    def test_pharmacy_assistant_requests_payment_before_live_quote(self):
+        sender = "otc-payment-first-user"
+        PHARMACY_CONTEXT_BY_SENDER.pop(sender, None)
+
+        first = pharmacy_chat_response(
+            None,
+            sender,
+            "Find the best allergy medicine near Westwood and order it for delivery",
+        )
+
+        self.assertIn("Service fee required", first)
+        self.assertIn("0.05 FET", first)
+        self.assertNotIn("Price comparison found", first)
+
+    def test_browser_use_price_text_parser(self):
+        product = next(item for item in _mock_otc_catalog() if item.active_ingredient == "Loratadine")
+        parsed = _parse_browser_price_text(
+            "- Walmart — $7.71 — Shipping or pickup — https://www.walmart.com/example\n"
+            "- Target — price not confirmed — Pickup — https://www.target.com/example\n"
+            "- GoodRx — $2.00 — Coupon price — https://www.goodrx.com/loratadine",
+            product,
+        )
+
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0].merchant, "Walmart")
+        self.assertEqual(parsed[1].price_usd, "$2.00")
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))

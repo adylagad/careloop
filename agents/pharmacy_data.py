@@ -2,9 +2,9 @@ from copy import deepcopy
 import asyncio
 from math import atan2, cos, radians, sin, sqrt
 import os
+import re
 from threading import Thread
 import httpx
-from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 from models import OTCPriceOption, OTCProduct
@@ -78,66 +78,58 @@ def costplus_price_option(product: OTCProduct) -> OTCPriceOption | None:
     )
 
 
-class _BrowserPriceOption(BaseModel):
-    product_name: str = Field(description="Exact product name shown on the site")
-    price_usd: str = Field(description="Displayed consumer price, formatted like $12.99")
-    merchant: str = Field(description="Store, pharmacy, marketplace, or price service name")
-    fulfillment: str = Field(description="pickup, delivery, shipping, coupon, or unknown")
-    source: str = Field(description="Website where this price was found")
-    url: str | None = Field(default=None, description="Product or price page URL if available")
-    notes: str | None = Field(default=None, description="Short caveat such as membership, coupon, or out of stock")
-
-
-class _BrowserPriceComparison(BaseModel):
-    prices: list[_BrowserPriceOption] = Field(default_factory=list)
-
-
 async def _fetch_browser_price_options_async(product: OTCProduct, address_hint: str) -> list[OTCPriceOption]:
     from browser_use_sdk.v3 import AsyncBrowserUse
 
     client = AsyncBrowserUse()
     task = (
         "Find current publicly visible consumer prices for this over-the-counter medicine. "
-        "Return only prices you can read on the page today. Include both online delivery/shipping and local pickup "
-        "or coupon options when visible. Do not invent prices. If a site asks for account checkout, skip it. "
-        "Prefer GoodRx, Walmart, CVS, Walgreens, Target, Amazon, and Cost Plus Drugs when available. "
-        f"Medicine: @{{{product.active_ingredient} {product.strength}}}. "
-        f"Common package/quantity: @{{{product.package_size}}}. "
-        f"User area for local pickup prices: @{{{address_hint}}}. "
-        f"Return at most {BROWSER_PRICE_LIMIT} distinct price options."
+        "Check GoodRx, Walmart, CVS, Walgreens, Target, Amazon, and Cost Plus Drugs when available. "
+        "Return only prices you can read on the page today. Include online delivery/shipping, local pickup, "
+        "or coupon options when visible. Do not invent prices; skip unconfirmed prices. "
+        "If a site asks for account checkout or blocks the price, skip it. "
+        f"Medicine: {product.active_ingredient} {product.strength}. "
+        f"Common package/quantity: {product.package_size}. "
+        f"User area for local pickup prices: {address_hint}. "
+        f"Return at most {BROWSER_PRICE_LIMIT} distinct price options as bullet lines in this exact format: "
+        "- Merchant — $price — fulfillment/notes — URL."
     )
     run_kwargs = {
-        "output_schema": _BrowserPriceComparison,
         "model": BROWSER_PRICE_MODEL,
         "proxy_country_code": "us",
-        "allowed_domains": [
-            "*.goodrx.com",
-            "*.walmart.com",
-            "*.cvs.com",
-            "*.walgreens.com",
-            "*.target.com",
-            "*.amazon.com",
-            "*.costplusdrugs.com",
-        ],
     }
-    try:
-        result = await client.run(task, **run_kwargs)
-    except TypeError:
-        run_kwargs.pop("allowed_domains", None)
-        result = await client.run(task, **run_kwargs)
-    return [
-        OTCPriceOption(
-            product_name=item.product_name,
-            price_usd=item.price_usd,
-            merchant=item.merchant,
-            fulfillment=item.fulfillment,
-            source=item.source,
-            url=item.url,
-            notes=item.notes,
+    result = await client.run(task, **run_kwargs)
+    return _parse_browser_price_text(str(result.output), product)
+
+
+def _parse_browser_price_text(text: str, product: OTCProduct) -> list[OTCPriceOption]:
+    options: list[OTCPriceOption] = []
+    pattern = re.compile(
+        r"^\s*[-*]\s*(?P<merchant>[^—\n-]+?)\s*[—-]\s*"
+        r"(?P<price>\$\d+(?:\.\d{2})?)\s*[—-]\s*"
+        r"(?P<notes>.*?)\s*[—-]\s*"
+        r"(?P<url>https?://\S+)",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(text):
+        merchant = match.group("merchant").strip()
+        notes = match.group("notes").strip()
+        if "not confirmed" in notes.lower() or "unconfirmed" in notes.lower():
+            continue
+        options.append(
+            OTCPriceOption(
+                product_name=product.name,
+                price_usd=match.group("price").strip(),
+                merchant=merchant,
+                fulfillment=notes or "public listing",
+                source="Browser Use live web search",
+                url=match.group("url").rstrip(").,"),
+                notes=f"Source merchant: {merchant}",
+            )
         )
-        for item in result.output.prices[:BROWSER_PRICE_LIMIT]
-        if item.price_usd.strip().startswith("$")
-    ]
+        if len(options) >= BROWSER_PRICE_LIMIT:
+            break
+    return options
 
 
 def _run_async_in_thread(coro):
@@ -153,7 +145,7 @@ def _run_async_in_thread(coro):
 
     thread = Thread(target=runner, daemon=True)
     thread.start()
-    thread.join(timeout=int(os.getenv("PHARMACY_BROWSER_PRICE_TIMEOUT_SECONDS", "90")))
+    thread.join(timeout=int(os.getenv("PHARMACY_BROWSER_PRICE_TIMEOUT_SECONDS", "210")))
     if thread.is_alive() or error is not None:
         return []
     return result or []
