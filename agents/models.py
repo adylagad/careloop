@@ -92,6 +92,16 @@ class OTCProduct(Model):
     price_source: str = "mock catalog"
 
 
+class OTCPriceOption(Model):
+    product_name: str
+    price_usd: str
+    merchant: str
+    fulfillment: str
+    source: str
+    url: str | None = None
+    notes: str | None = None
+
+
 class PharmacyOrderQuote(Model):
     case_id: str
     product: OTCProduct
@@ -103,5 +113,7 @@ class PharmacyOrderQuote(Model):
     user_need: str
     nearby_pharmacies: list[str] | None = None
     location_source: str | None = None
+    online_price_options: list[OTCPriceOption] | None = None
+    offline_price_options: list[OTCPriceOption] | None = None
     status: str
     payment_quote: PaymentQuote

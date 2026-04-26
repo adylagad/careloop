@@ -55,10 +55,12 @@ The agent also remembers the latest OTC recommendation per ASI:One sender so fol
 questions such as "which is nearest to USC Village for pickup?" use the previous medicine
 context instead of starting over.
 
-For real data, the agent uses the Cost Plus Drugs public API for live quoted prices and
-checkout URLs where available, and OpenStreetMap Nominatim/Overpass for nearby pharmacy
-locations. Orchestrator-owned prescription readiness still needs mocking until a
-pharmacy/EHR integration is available.
+For real data, the agent uses Browser Use Cloud when `BROWSER_USE_API_KEY` is set to
+read current public OTC prices from consumer sites such as GoodRx, Walmart, CVS,
+Walgreens, Target, Amazon, and Cost Plus Drugs. If Browser Use is unavailable, it falls
+back to the Cost Plus Drugs public API for live quoted online prices and OpenStreetMap
+Nominatim/Overpass for nearby pharmacy locations. Orchestrator-owned prescription
+readiness still needs mocking until a pharmacy/EHR integration is available.
 
 Example ASI:One prompts:
 

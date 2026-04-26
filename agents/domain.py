@@ -11,7 +11,12 @@ from models import (
     PharmacyRecommendation,
     PrescriptionDocumentRequest,
 )
-from pharmacy_data import enrich_product_with_costplus, nearby_pharmacies
+from pharmacy_data import (
+    browseruse_price_options,
+    costplus_price_option,
+    enrich_product_with_costplus,
+    nearby_pharmacies,
+)
 from prescription_scanner import (
     ExtractedPrescription,
     extract_prescription_text,
@@ -317,6 +322,15 @@ def build_otc_order_quote(request: CareRequest) -> PharmacyOrderQuote:
     address_hint = value_from_context(request, "address", value_from_context(request, "location", "Los Angeles, CA"))
     preference = value_from_context(request, "preference", "delivery")
     locations = nearby_pharmacies(address_hint)
+    browser_prices = browseruse_price_options(product, address_hint)
+    online_price_options = browser_prices or [
+        option
+        for option in [costplus_price_option(item) for item in [product, *ranked[1:3]]]
+        if option is not None
+    ]
+    offline_price_options = [
+        option for option in online_price_options if any(term in option.fulfillment.lower() for term in ["pickup", "coupon"])
+    ]
     reference = f"careloop-otc-order-{request.case_id}-{uuid4().hex[:8]}"
     quote = PaymentQuote(
         case_id=request.case_id,
@@ -336,6 +350,8 @@ def build_otc_order_quote(request: CareRequest) -> PharmacyOrderQuote:
         user_need=_infer_otc_need(request.text),
         nearby_pharmacies=locations,
         location_source="OpenStreetMap Overpass API" if locations else "location lookup unavailable",
+        online_price_options=online_price_options,
+        offline_price_options=offline_price_options,
         status="quote_ready",
         payment_quote=quote,
     )
@@ -353,10 +369,16 @@ def _infer_otc_need(text: str) -> str:
 
 
 def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
+    online_options = order.online_price_options or []
     online_prices = "\n".join(
-        f"- {item.name}: {item.unit_price_usd} via {item.provider} ({item.price_source})"
-        for item in [order.product, *order.alternatives]
+        (
+            f"- {item.product_name}: {item.price_usd} via {item.merchant}"
+            f" ({item.fulfillment}; {item.source})"
+        )
+        for item in online_options
     )
+    if not online_prices:
+        online_prices = "- No verified online prices found right now."
     alternatives = "\n".join(
         f"- {item.name}: {item.reason}"
         for item in order.alternatives
@@ -364,17 +386,28 @@ def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
     locations = "\n".join(f"- {item}" for item in (order.nearby_pharmacies or []))
     if not locations:
         locations = "- I could not fetch nearby pharmacy locations right now."
+    offline_options = order.offline_price_options or []
     offline_prices = "\n".join(
-        f"- {item}: local shelf price not available from free public APIs; call or check store app before going."
-        for item in (order.nearby_pharmacies or [])
+        (
+            f"- {item.product_name}: {item.price_usd} via {item.merchant}"
+            f" ({item.fulfillment}; {item.source})"
+        )
+        for item in offline_options
     )
     if not offline_prices:
+        offline_prices = "\n".join(
+            f"- {item}: live shelf price not found; use this for distance/pickup planning."
+            for item in (order.nearby_pharmacies or [])
+        )
+    if not offline_prices:
         offline_prices = "- No offline pharmacy price data found."
+    price_engine = "Browser Use live web search" if order.online_price_options and order.online_price_options[0].source != "Cost Plus Drugs public API" else "public API fallback"
     return (
         "CareLoop Pharmacy Assistant\n\n"
         f"Need: {order.user_need}\n"
         f"Address area: {order.address_hint}\n"
         f"Location source: {order.location_source}\n\n"
+        f"Price engine: {price_engine}\n"
         "Price comparison found:\n"
         "Online prices:\n"
         f"{online_prices}\n\n"
@@ -396,8 +429,8 @@ def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
         f"Payment reference: {order.payment_quote.reference}\n\n"
         "After FET payment, I create the CareLoop order record and return the checkout handoff. "
         "The final product purchase, shipping address, and card payment happen on the provider checkout page.\n\n"
-        "Offline price note: free public data exposes nearby pharmacy locations, but not live local OTC shelf prices "
-        "for CVS/Walgreens/Rite Aid. I only show prices I can verify from public quote APIs.\n\n"
+        "Offline price note: I only show store prices when the live browser search can read them. "
+        "Otherwise I show real nearby pharmacy locations for pickup planning.\n\n"
         f"Safety note: {order.product.safety_note}"
     )
 

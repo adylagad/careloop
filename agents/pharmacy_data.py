@@ -1,14 +1,23 @@
 from copy import deepcopy
+import asyncio
 from math import atan2, cos, radians, sin, sqrt
+import os
+from threading import Thread
 import httpx
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
-from models import OTCProduct
+from models import OTCPriceOption, OTCProduct
 
+
+load_dotenv()
 
 COST_PLUS_URL = "https://us-central1-costplusdrugs-publicapi.cloudfunctions.net/main"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 USER_AGENT = "CareLoopHackathon/0.1 (educational demo)"
+BROWSER_PRICE_MODEL = os.getenv("PHARMACY_BROWSER_PRICE_MODEL", "gpt-5.4-mini")
+BROWSER_PRICE_LIMIT = int(os.getenv("PHARMACY_BROWSER_PRICE_LIMIT", "6"))
 
 
 COST_PLUS_LOOKUPS = {
@@ -53,6 +62,111 @@ def enrich_product_with_costplus(product: OTCProduct) -> OTCProduct:
     enriched.checkout_url = record.get("url") or product.checkout_url
     enriched.price_source = "Cost Plus Drugs public API"
     return enriched
+
+
+def costplus_price_option(product: OTCProduct) -> OTCPriceOption | None:
+    if not product.unit_price_usd.startswith("$"):
+        return None
+    return OTCPriceOption(
+        product_name=product.name,
+        price_usd=product.unit_price_usd,
+        merchant=product.provider,
+        fulfillment="online checkout",
+        source=product.price_source,
+        url=product.checkout_url,
+        notes=product.availability,
+    )
+
+
+class _BrowserPriceOption(BaseModel):
+    product_name: str = Field(description="Exact product name shown on the site")
+    price_usd: str = Field(description="Displayed consumer price, formatted like $12.99")
+    merchant: str = Field(description="Store, pharmacy, marketplace, or price service name")
+    fulfillment: str = Field(description="pickup, delivery, shipping, coupon, or unknown")
+    source: str = Field(description="Website where this price was found")
+    url: str | None = Field(default=None, description="Product or price page URL if available")
+    notes: str | None = Field(default=None, description="Short caveat such as membership, coupon, or out of stock")
+
+
+class _BrowserPriceComparison(BaseModel):
+    prices: list[_BrowserPriceOption] = Field(default_factory=list)
+
+
+async def _fetch_browser_price_options_async(product: OTCProduct, address_hint: str) -> list[OTCPriceOption]:
+    from browser_use_sdk.v3 import AsyncBrowserUse
+
+    client = AsyncBrowserUse()
+    task = (
+        "Find current publicly visible consumer prices for this over-the-counter medicine. "
+        "Return only prices you can read on the page today. Include both online delivery/shipping and local pickup "
+        "or coupon options when visible. Do not invent prices. If a site asks for account checkout, skip it. "
+        "Prefer GoodRx, Walmart, CVS, Walgreens, Target, Amazon, and Cost Plus Drugs when available. "
+        f"Medicine: @{{{product.active_ingredient} {product.strength}}}. "
+        f"Common package/quantity: @{{{product.package_size}}}. "
+        f"User area for local pickup prices: @{{{address_hint}}}. "
+        f"Return at most {BROWSER_PRICE_LIMIT} distinct price options."
+    )
+    run_kwargs = {
+        "output_schema": _BrowserPriceComparison,
+        "model": BROWSER_PRICE_MODEL,
+        "proxy_country_code": "us",
+        "allowed_domains": [
+            "*.goodrx.com",
+            "*.walmart.com",
+            "*.cvs.com",
+            "*.walgreens.com",
+            "*.target.com",
+            "*.amazon.com",
+            "*.costplusdrugs.com",
+        ],
+    }
+    try:
+        result = await client.run(task, **run_kwargs)
+    except TypeError:
+        run_kwargs.pop("allowed_domains", None)
+        result = await client.run(task, **run_kwargs)
+    return [
+        OTCPriceOption(
+            product_name=item.product_name,
+            price_usd=item.price_usd,
+            merchant=item.merchant,
+            fulfillment=item.fulfillment,
+            source=item.source,
+            url=item.url,
+            notes=item.notes,
+        )
+        for item in result.output.prices[:BROWSER_PRICE_LIMIT]
+        if item.price_usd.strip().startswith("$")
+    ]
+
+
+def _run_async_in_thread(coro):
+    result = None
+    error: BaseException | None = None
+
+    def runner():
+        nonlocal result, error
+        try:
+            result = asyncio.run(coro)
+        except BaseException as exc:
+            error = exc
+
+    thread = Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join(timeout=int(os.getenv("PHARMACY_BROWSER_PRICE_TIMEOUT_SECONDS", "90")))
+    if thread.is_alive() or error is not None:
+        return []
+    return result or []
+
+
+def browseruse_price_options(product: OTCProduct, address_hint: str) -> list[OTCPriceOption]:
+    if not os.getenv("BROWSER_USE_API_KEY"):
+        return []
+    try:
+        import browser_use_sdk.v3  # noqa: F401
+    except Exception:
+        return []
+    return _run_async_in_thread(_fetch_browser_price_options_async(product, address_hint))
 
 
 def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
