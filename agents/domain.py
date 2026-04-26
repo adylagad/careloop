@@ -18,7 +18,7 @@ from prescription_scanner import (
 
 PHARMACY_SERVICE_FEE_FET = "0.05"
 PHARMACY_MONITOR_CHECK_MINUTES = 15
-PRESCRIPTION_STATUS_AGENT_NAME = "careloop-prescription-status"
+PHARMACY_ASSISTANT_AGENT_NAME = "careloop-pharmacy-assistant"
 
 
 def make_case_id(prefix: str = "case") -> str:
@@ -241,7 +241,7 @@ def build_pharmacy_fulfillment_status(
     reference = f"careloop-pharmacy-monitor-{request.case_id}-{uuid4().hex[:8]}"
     quote = PaymentQuote(
         case_id=request.case_id,
-        service_name="CareLoop Prescription Status Monitor",
+        service_name="CareLoop Pharmacy Assistant Monitor",
         amount=PHARMACY_SERVICE_FEE_FET,
         reference=reference,
     )
@@ -268,7 +268,7 @@ def build_pharmacy_fulfillment_status(
 def format_pharmacy_fulfillment_preview(status: PharmacyFulfillmentStatus) -> str:
     ready_text = "Yes" if status.status.startswith("ready") else "Not yet"
     lines = [
-        "CareLoop Prescription Status",
+        "CareLoop Pharmacy Assistant",
         "",
         f"Prescription found: {status.medication} {status.dosage}",
         f"Pharmacy: {status.pharmacy_name}",
@@ -318,7 +318,7 @@ def pharmacy_monitoring_result(
 
     return CareResult(
         case_id=request.case_id,
-        agent_name=PRESCRIPTION_STATUS_AGENT_NAME,
+        agent_name=PHARMACY_ASSISTANT_AGENT_NAME,
         status="completed" if status.status.startswith("ready") else "monitoring",
         summary=summary,
         next_actions=[
@@ -340,7 +340,7 @@ def pharmacy_status_update_result(
 ) -> CareResult:
     return CareResult(
         case_id=request.case_id,
-        agent_name=PRESCRIPTION_STATUS_AGENT_NAME,
+        agent_name=PHARMACY_ASSISTANT_AGENT_NAME,
         status=status.status,
         summary=(
             f"Pharmacy update: {status.medication} {status.dosage} at {status.pharmacy_name} is "
@@ -366,7 +366,7 @@ def pharmacy_paid_result(
     )
     return CareResult(
         case_id=request.case_id,
-        agent_name="careloop-pharmacy-options",
+        agent_name=PHARMACY_ASSISTANT_AGENT_NAME,
         status="completed",
         summary=summary,
         next_actions=[
@@ -385,11 +385,11 @@ def pharmacy_paid_result(
 def pharmacy_unpaid_result(request: CareRequest, reason: str) -> CareResult:
     return CareResult(
         case_id=request.case_id,
-        agent_name=PRESCRIPTION_STATUS_AGENT_NAME,
+        agent_name=PHARMACY_ASSISTANT_AGENT_NAME,
         status="payment_required",
         summary=(
             "Pharmacy status can be checked once, but active automatic monitoring "
-            f"is held until the CareLoop Prescription Status fee is paid. Reason: {reason}"
+            f"is held until the CareLoop Pharmacy Assistant fee is paid. Reason: {reason}"
         ),
         next_actions=[
             "Approve the 0.05 FET service fee to monitor until the prescription is ready.",
@@ -623,7 +623,7 @@ def orchestrate_care(request: CareRequest) -> CareResult:
         status="completed",
         summary=summary,
         next_actions=[
-            "Invoke careloop-prescription-status for paid prescription status monitoring.",
+            "Invoke careloop-pharmacy-assistant for paid prescription status monitoring.",
             "Show timeline in the demo flow.",
             "Use ASI:One to ask the orchestrator for the full care journey.",
         ],

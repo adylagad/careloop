@@ -23,10 +23,9 @@ python main.py               # run all CareLoop specialists together
 The repo currently focuses only on Fetch.ai/uAgents work. No frontend or backend service
 layer is included yet.
 
-- `careloop-prescription-status` — Prescription Status, the first OmegaClaw specialist
-  target. It assumes the doctor already sent the prescription to a pharmacy and the
-  patient may not know the medication name yet. It checks mocked pharmacy readiness,
-  starts paid FET monitoring, and sends readiness updates when the status changes.
+- `careloop-pharmacy-assistant` — broad pharmacy specialist and first OmegaClaw target.
+  It starts with doctor-sent prescription readiness checks, paid FET monitoring, and
+  readiness updates. The same agent will own OTC medicine ordering next.
 - `careloop-prescription-explainer` — senior-friendly mocked prescription explanations.
 - `careloop-appointment-booking` — mocked doctor search, booking, and prep checklist.
 - `careloop-caregiver-notifier` — SMS/email-style caregiver updates.
@@ -35,19 +34,24 @@ layer is included yet.
 - `careloop-orchestrator` — ASI:One-facing care timeline coordinator.
 
 For local payment testing, run `payment_buyer_agent.py` as a demo buyer after setting
-`PRESCRIPTION_STATUS_AGENT_ADDRESS` to the status agent address. Set
-`PAYMENT_BUYER_MODE=reject` to test rejection handling. The buyer asks the status agent
-to keep checking a doctor-sent prescription until it is ready for pickup.
+`PHARMACY_ASSISTANT_AGENT_ADDRESS` to the pharmacy assistant address. Set
+`PAYMENT_BUYER_MODE=reject` to test rejection handling. The buyer asks the pharmacy
+assistant to keep checking a doctor-sent prescription until it is ready for pickup.
 
-## Prescription Status Agent
+## Pharmacy Assistant Agent
 
-`careloop-prescription-status` is framed around post-visit prescription status. The
+`careloop-pharmacy-assistant` is framed as the one agent for pharmacy-related work. The
 patient does not need to call the pharmacy and does not need to know the medication name
 before pickup. The agent uses patient/pharmacy context to look up a mocked pending
 prescription, then checks a mocked pharmacy status adapter for states such as received,
 in progress, delayed, action needed, ready for pickup, or ready for delivery. One-time
 ASI:One chat checks are free previews; paid uAgent requests use the FET Payment Protocol
 to unlock active monitoring until a terminal status update is available.
+
+For real-data expansion, the next adapter layer can use openFDA/RxNorm/DailyMed for
+medication reference data, OpenStreetMap for pharmacy locations, and Cost Plus Drugs or
+GoodRx-style APIs for price/formulary data. Live patient-specific readiness still needs
+mocking until a pharmacy/EHR integration is available.
 
 Example ASI:One prompt:
 

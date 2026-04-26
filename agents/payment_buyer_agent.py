@@ -19,7 +19,11 @@ from models import CareRequest, CareResult
 AGENT_NAME = "careloop-payment-buyer-demo"
 PORT = env_int("PAYMENT_BUYER_AGENT_PORT", 8017)
 BUYER_MODE = os.getenv("PAYMENT_BUYER_MODE", "commit").lower()
-PHARMACY_AGENT_ADDRESS = os.getenv("PRESCRIPTION_STATUS_AGENT_ADDRESS") or os.getenv("PHARMACY_AGENT_ADDRESS", "")
+PHARMACY_AGENT_ADDRESS = (
+    os.getenv("PHARMACY_ASSISTANT_AGENT_ADDRESS")
+    or os.getenv("PRESCRIPTION_STATUS_AGENT_ADDRESS")
+    or os.getenv("PHARMACY_AGENT_ADDRESS", "")
+)
 
 agent = create_careloop_agent(
     name=AGENT_NAME,

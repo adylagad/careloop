@@ -27,7 +27,11 @@ from prescription_scanner import (
 
 AGENT_NAME = "careloop-prescription-explainer"
 PORT = env_int("PRESCRIPTION_AGENT_PORT", 8012)
-PHARMACY_AGENT_ADDRESS = os.getenv("PHARMACY_AGENT_ADDRESS", "")
+PHARMACY_AGENT_ADDRESS = (
+    os.getenv("PHARMACY_ASSISTANT_AGENT_ADDRESS")
+    or os.getenv("PRESCRIPTION_STATUS_AGENT_ADDRESS")
+    or os.getenv("PHARMACY_AGENT_ADDRESS", "")
+)
 
 agent = create_careloop_agent(
     name=AGENT_NAME,

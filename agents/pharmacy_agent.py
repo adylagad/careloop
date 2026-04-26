@@ -1,3 +1,5 @@
+import os
+
 from uagents import Context, Protocol
 from uagents_core.contrib.protocols.payment import (
     CommitPayment,
@@ -22,21 +24,28 @@ from domain import (
 from models import CareRequest, CareResult, PharmacyFulfillmentStatus
 
 
-AGENT_NAME = "careloop-prescription-status"
+AGENT_NAME = "careloop-pharmacy-assistant"
 PORT = env_int("PHARMACY_AGENT_PORT", 8011)
+
+if not os.getenv("PHARMACY_ASSISTANT_AGENT_SEED"):
+    os.environ["PHARMACY_ASSISTANT_AGENT_SEED"] = (
+        os.getenv("PRESCRIPTION_STATUS_AGENT_SEED")
+        or os.getenv("PHARMACY_AGENT_SEED")
+        or "careloop pharmacy options seed phrase change me"
+    )
 
 agent = create_careloop_agent(
     name=AGENT_NAME,
     port=PORT,
-    seed_env="PRESCRIPTION_STATUS_AGENT_SEED",
+    seed_env="PHARMACY_ASSISTANT_AGENT_SEED",
     default_seed="careloop pharmacy options seed phrase change me",
     description=(
-        "CareLoop Prescription Status checks whether the patient's doctor-sent "
-        "prescription is received, delayed, ready, or needs action, with paid FET monitoring."
+        "CareLoop Pharmacy Assistant handles pharmacy tasks, starting with doctor-sent "
+        "prescription status checks and paid FET monitoring, with OTC ordering planned next."
     ),
 )
 
-care_proto = Protocol(name="CareLoopPharmacyOptionsProtocol", version="0.1.0")
+care_proto = Protocol(name="CareLoopPharmacyAssistantProtocol", version="0.1.0")
 payment_proto = Protocol(spec=payment_protocol_spec, role="seller")
 pending_fulfillments: dict[str, tuple[str, CareRequest, PharmacyFulfillmentStatus]] = {}
 active_monitors: dict[str, tuple[str, CareRequest, int]] = {}
@@ -58,8 +67,8 @@ def pharmacy_chat_response(ctx: Context, sender: str, text: str) -> str:
     normalized = " ".join(text.lower().split())
     if normalized in {"hi", "hello", "hey", "help", "what can you do"}:
         return (
-            "Hi, I’m CareLoop’s prescription status helper. Ask me if your pharmacy has "
-            "your prescription ready. You don’t need to know the medication name yet.\n\n"
+            "Hi, I’m CareLoop’s pharmacy assistant. Ask me if your pharmacy has your "
+            "prescription ready. You don’t need to know the medication name yet.\n\n"
             "Example: `Is my prescription ready at CVS Westwood?`"
         )
 
@@ -152,7 +161,7 @@ async def handle_care_result(ctx: Context, sender: str, msg: CareResult):
 @agent.on_event("startup")
 async def startup(ctx: Context):
     ctx.logger.info(f"{AGENT_NAME} address: {ctx.agent.address}")
-    ctx.logger.info("OmegaClaw skill target: CareLoop Prescription Status")
+    ctx.logger.info("OmegaClaw skill target: CareLoop Pharmacy Assistant")
 
 
 @agent.on_interval(period=30.0)
