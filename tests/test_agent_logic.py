@@ -25,6 +25,7 @@ from domain import (  # noqa: E402
     triage_request,
 )
 from models import CareRequest, PrescriptionDocumentRequest  # noqa: E402
+from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  # noqa: E402
 from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat_response  # noqa: E402
 
 
@@ -107,6 +108,26 @@ class AgentLogicTests(unittest.TestCase):
     def test_pharmacy_assistant_separates_prescription_status_intent(self):
         self.assertTrue(is_pharmacy_status_intent("Is my prescription ready at CVS Westwood?"))
         self.assertFalse(is_otc_order_intent("Is my prescription ready at CVS Westwood?"))
+
+    def test_pharmacy_assistant_answers_followup_from_last_otc_context(self):
+        sender = "otc-followup-user"
+        PHARMACY_CONTEXT_BY_SENDER.pop(sender, None)
+
+        first = pharmacy_chat_response(
+            None,
+            sender,
+            "Find the best allergy medicine near Westwood and order it for delivery",
+        )
+        followup = pharmacy_chat_response(
+            None,
+            sender,
+            "which is the nearest store to USC Village where I can collect it? I do not want online",
+        )
+
+        self.assertIn("Loratadine", first)
+        self.assertIn("USC Village", followup)
+        self.assertIn("Loratadine", followup)
+        self.assertNotIn("I can help with over-the-counter medicine only", followup)
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))

@@ -49,6 +49,9 @@ creates an order record after payment, and returns a provider checkout handoff. 
 does not expose a normal public consumer API for fully automatic checkout, shipping,
 payment, and purchase confirmation, so the real fulfillment handoff is a safe provider
 checkout URL while the agent-owned order/payment behavior is demonstrated through FET.
+The agent also remembers the latest OTC recommendation per ASI:One sender so follow-up
+questions such as "which is nearest to USC Village for pickup?" use the previous medicine
+context instead of starting over.
 
 For real data, the agent uses the Cost Plus Drugs public API for live quoted prices and
 checkout URLs where available, and OpenStreetMap Nominatim/Overpass for nearby pharmacy
@@ -61,6 +64,12 @@ Example ASI:One prompts:
 Find the best allergy medicine near Westwood and order it for delivery.
 Order Tylenol for delivery to Santa Monica.
 ```
+
+For a real Fetch testnet transaction in the demo buyer, set `FET_ONCHAIN_PAYMENT=true`,
+`FET_TESTNET_MNEMONIC` to a funded Dorado/stable testnet wallet, and
+`PHARMACY_ASSISTANT_FET_WALLET_ADDRESS` to the seller wallet address. When those are set,
+the buyer sends `atestfet` and uses the chain transaction hash as
+`CommitPayment.transaction_id`; otherwise it uses the local demo transaction id.
 
 ## Prescription Agent Document Intake
 
