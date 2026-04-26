@@ -551,21 +551,25 @@ def _is_short_followup(text: str) -> bool:
 
 def _intro_message() -> str:
     return (
-        "Hi, I’m CareLoop. Tell me what you need help with and I’ll guide the next step.\n\n"
-        "I can help with prescription questions, over-the-counter medicine options, appointment searches, "
-        "caregiver updates, and medication reminders."
+        "👋 **Hi, I’m CareLoop.** Tell me what is happening and I’ll guide the next step.\n\n"
+        "I can help with:\n"
+        "- 🧾 Prescription questions and scanned labels\n"
+        "- 💊 OTC medicine search, price comparison, and checkout handoff\n"
+        "- 🩺 Appointment searches and Agentverse doctor booking\n"
+        "- 👨‍👩‍👧 Caregiver messages and Gmail sending\n"
+        "- ⏰ Medication reminder planning"
     )
 
 
 def _format_timeline(session: OrchestratorSession) -> str:
     if not session.timeline:
-        return "CareLoop timeline is empty so far."
+        return "📍 **CareLoop timeline**\n\nNo care steps yet."
     compact_events: list[str] = []
     for event in session.timeline:
         if event not in compact_events:
             compact_events.append(event)
     lines = "\n".join(f"{index}. {event}" for index, event in enumerate(compact_events[-8:], start=1))
-    return f"CareLoop timeline\nCase: {session.case_id}\n\n{lines}"
+    return f"📍 **CareLoop timeline**\n**Case:** `{session.case_id}`\n\n{lines}"
 
 
 def _specialist_handle(route: str) -> str:
@@ -599,16 +603,25 @@ def _build_paid_quote(route: str, request: CareRequest) -> PaymentQuote:
 def _format_paid_payment_prompt(route: str, request: CareRequest, quote: PaymentQuote, session: OrchestratorSession) -> str:
     if route == APPOINTMENT_AGENT_NAME:
         return (
-            "I can check nearby appointment and imaging options for you.\n\n"
-            f"To start the live search, please approve the {quote.amount} FET CareLoop service fee.\n\n"
-            "After payment, I’ll show the providers or booking links I can verify. "
-            "For MRI scans, many centers require a clinician order or referral before scheduling."
+            "🩺 **CareLoop can check nearby appointment and imaging options for you.**\n\n"
+            f"💳 To start the live search, please approve the **{quote.amount} FET** CareLoop service fee "
+            f"({quote.amount} FET CareLoop service fee).\n\n"
+            "| After payment | What I’ll return |\n"
+            "|---|---|\n"
+            "| Provider search | Real providers or booking links I can verify |\n"
+            "| Cost/availability | Public details when the source publishes them |\n"
+            "| MRI note | Many centers require a clinician order or referral before scheduling |\n"
         )
 
     return (
-        "I can compare over-the-counter medicine options and prices for you.\n\n"
-        f"To start the live search, please approve the {quote.amount} FET CareLoop service fee.\n\n"
-        "After payment, I’ll show the online and pickup options I can verify."
+        "💊 **CareLoop can compare over-the-counter medicine options and prices for you.**\n\n"
+        f"💳 To start the live search, please approve the **{quote.amount} FET** CareLoop service fee "
+        f"({quote.amount} FET CareLoop service fee).\n\n"
+        "| After payment | What I’ll return |\n"
+        "|---|---|\n"
+        "| Online prices | Verified prices I can read |\n"
+        "| Pickup options | Nearby real pharmacy locations |\n"
+        "| Checkout handoff | Provider link for final purchase |\n"
     )
 
 
@@ -630,16 +643,23 @@ def _answer_from_appointment_context(text: str, search: AppointmentSearchQuote) 
         details.append(f"Booking link: {option.booking_url}")
         if option.notes:
             details.append(f"Note: {option.notes}")
-        return "\n".join(details)
+        return "📍 **Closest saved option**\n\n" + "\n".join(f"- {detail}" for detail in details)
 
     if "phone" in normalized or "call" in normalized:
-        return f"{option.provider_name}: {option.phone or 'phone not published'}. Booking link: {option.booking_url}"
+        return (
+            f"☎️ **{option.provider_name}**\n"
+            f"- Phone: {option.phone or 'not published'}\n"
+            f"- Booking link: {option.booking_url}"
+        )
 
     if "link" in normalized or "book" in normalized:
-        return f"Use this booking/search link for {option.provider_name}: {option.booking_url}"
+        return f"🔗 **Booking/search link for {option.provider_name}:**\n{option.booking_url}"
 
     if "cost" in normalized or "price" in normalized:
-        return f"{option.provider_name} listed cost as: {option.estimated_cost}. Confirm final cost and insurance coverage with the provider."
+        return (
+            f"💵 **{option.provider_name} cost info:** {option.estimated_cost}\n\n"
+            "Confirm final cost and insurance coverage with the provider."
+        )
 
     return (
         f"From the saved search, I’d start with {option.provider_name} at {option.location}. "
@@ -653,12 +673,13 @@ def _answer_from_otc_context(text: str, order: PharmacyOrderQuote) -> str:
         first = (order.nearby_pharmacies or [None])[0]
         if first:
             return (
-                f"The closest pickup location from the saved search list is:\n{first}\n\n"
+                "📍 **Closest pickup option from the saved search**\n\n"
+                f"{first}\n\n"
                 "Please confirm shelf availability with the store before going."
             )
-        return "I don’t have a saved nearby pickup location from the last search."
+        return "I don’t have a saved closest pickup location from the last search yet."
     if "price" in normalized or "cost" in normalized:
-        return f"The saved online quote was {order.subtotal_usd} for {order.product.name} from {order.product.price_source}."
+        return f"💵 The saved online quote was **{order.subtotal_usd}** for **{order.product.name}** from {order.product.price_source}."
     return format_otc_order_preview(order)
 
 
@@ -726,7 +747,7 @@ def _saved_care_context(session: OrchestratorSession) -> str:
 
 def _format_caregiver_draft(result: CareResult) -> str:
     draft = result.summary.split("\n\n", 1)[1] if "\n\n" in result.summary else result.summary
-    return f"Here’s a caregiver message you can send:\n\n{draft}"
+    return f"👨‍👩‍👧 **Here’s a caregiver message you can send:**\n\n{draft}"
 
 
 def _fallback_caregiver_draft(text: str, result: CareResult, session: OrchestratorSession) -> str:
@@ -755,7 +776,7 @@ def _fallback_caregiver_draft(text: str, result: CareResult, session: Orchestrat
         if option is not None and option.provider_name.lower() not in fact_text.lower():
             fact_text = f"{fact_text} at {option.provider_name}"
     if fact_text:
-        return f"Here’s a caregiver message you can send:\n\n{greeting} that {fact_text}. Please check in when you can."
+        return f"👨‍👩‍👧 **Here’s a caregiver message you can send:**\n\n{greeting} that {fact_text}. Please check in when you can."
     return _format_caregiver_draft(result)
 
 
@@ -847,8 +868,8 @@ def _smart_caregiver_draft(sender: str, session: OrchestratorSession, text: str,
             body=body,
         )
         return (
-            f"Drafted email to {to_email}:\n\n"
-            f"Subject: {subject}\n\n"
+            f"✉️ **Drafted email to {to_email}**\n\n"
+            f"**Subject:** {subject}\n\n"
             f"{body}\n\n"
             "Say `send it` to send this with Gmail."
         )
@@ -860,7 +881,7 @@ def _smart_caregiver_draft(sender: str, session: OrchestratorSession, text: str,
         subject=fallback_subject,
         body=draft,
     )
-    return f"Here’s a caregiver message you can send:\n\n{draft}"
+    return f"👨‍👩‍👧 **Here’s a caregiver message you can send:**\n\n{draft}"
 
 
 def _send_saved_caregiver_email(session: OrchestratorSession) -> str:
@@ -887,9 +908,9 @@ def _send_saved_caregiver_email(session: OrchestratorSession) -> str:
 
     _add_timeline(session, f"Caregiver email sent to {sent.to_email}")
     return (
-        f"Sent the caregiver email to {sent.to_email}.\n\n"
-        f"Subject: {sent.subject}\n"
-        f"Gmail message id: {sent.message_id or 'sent'}"
+        f"✅ **Sent the caregiver email to {sent.to_email}.**\n\n"
+        f"**Subject:** {sent.subject}\n"
+        f"**Gmail message id:** {sent.message_id or 'sent'}"
     )
 
 
@@ -1010,7 +1031,7 @@ def _format_direct_booking_result(session: OrchestratorSession, result: CareResu
     session.last_text = result.summary
     return (
         f"{result.summary}\n\n"
-        "I can also write or send a caregiver email about this appointment."
+        "👨‍👩‍👧 I can also write or send a caregiver email about this appointment."
     )
 
 
@@ -1021,9 +1042,14 @@ def _doctor_office_offer(session: OrchestratorSession, route_text: str) -> str:
     session.last_text = route_text
     _add_timeline(session, "Agentverse doctor booking option offered")
     return (
-        "I found an Agentverse doctor who can book this end to end.\n\n"
-        "CareLoop Doctor Office: Dr. Maya Patel at CareLoop Family Clinic near USC Village.\n\n"
-        "This can create the appointment and send the Google Calendar invite. Would you like me to proceed?"
+        "🩺 **I found an Agentverse doctor who can book this end to end.**\n\n"
+        "| Doctor office | Details |\n"
+        "|---|---|\n"
+        "| Specialist | CareLoop Doctor Office |\n"
+        "| Doctor | Dr. Maya Patel |\n"
+        "| Clinic | CareLoop Family Clinic near USC Village |\n"
+        "| Can do | Create the appointment and send the Google Calendar invite |\n\n"
+        "**Would you like me to proceed?**"
     )
 
 
@@ -1034,10 +1060,13 @@ def _pharmacy_offer(session: OrchestratorSession, route_text: str) -> str:
     session.last_text = route_text
     _add_timeline(session, "Agentverse pharmacy assistant offered")
     return (
-        "I found an Agentverse pharmacy assistant that can handle this.\n\n"
-        "CareLoop Pharmacy Assistant compares OTC prices, shows pickup or delivery options, "
-        "and prepares checkout after a small FET service fee.\n\n"
-        "Would you like me to proceed?"
+        "💊 **I found an Agentverse pharmacy assistant that can handle this.**\n\n"
+        "| Capability | What it does |\n"
+        "|---|---|\n"
+        "| OTC search | Compares medicine options and prices |\n"
+        "| Fulfillment | Shows pickup or delivery options |\n"
+        "| Checkout | Prepares checkout after a small FET service fee |\n\n"
+        "**Would you like me to proceed?**"
     )
 
 
@@ -1077,7 +1106,7 @@ async def _book_doctor_office(
         pending_doctor_bookings_by_case[request.case_id] = sender
         _add_timeline(session, "Doctor office booking requested")
         await ctx.send(DOCTOR_OFFICE_AGENT_ADDRESS, request)
-        return "Great. I’m booking this with CareLoop Doctor Office now and will send the confirmed appointment here."
+        return "✅ Great. I’m booking this with CareLoop Doctor Office now and will send the confirmed appointment here."
     return _format_direct_booking_result(session, book_doctor_office_appointment(request))
 
 
@@ -1174,7 +1203,7 @@ def _complete_local_route(session: OrchestratorSession, route: str, request: Car
     if route == "careloop-orchestrator":
         _add_timeline(session, "Prescription-readiness flow held for orchestrator context")
         return (
-            "CareLoop can coordinate prescription readiness, but the standalone prescription status connector is still mocked.\n\n"
+            "💊 CareLoop can coordinate prescription readiness, but the standalone prescription status connector is still mocked.\n\n"
             "For the demo, I’ll keep this as an orchestrator-owned timeline item instead of asking the older adult to know hidden e-prescription details."
         )
 
@@ -1193,9 +1222,9 @@ def _complete_local_route(session: OrchestratorSession, route: str, request: Car
         _add_timeline(session, event)
     next_actions = "\n".join(f"- {action}" for action in result.next_actions)
     return (
-        f"CareLoop handled this with {_specialist_handle(route)}.\n\n"
+        f"✅ **CareLoop handled this with {_specialist_handle(route)}.**\n\n"
         f"{result.summary}\n\n"
-        f"Next actions:\n{next_actions}\n\n"
+        f"**Next actions**\n{next_actions}\n\n"
         f"{_format_timeline(session)}"
     )
 
@@ -1210,7 +1239,7 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
     if emergency_reason:
         _add_timeline(session, f"Emergency stop: {emergency_reason}")
         return (
-            f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
+            f"🚨 **This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.**\n\n"
             "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care."
         )
     if _is_send_caregiver_email_request(text):

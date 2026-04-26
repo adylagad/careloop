@@ -243,9 +243,9 @@ def _pending_requires_refresh(pending: PendingAppointmentPayment, request_finger
 
 def _pending_payment_message(pending: PendingAppointmentPayment) -> str:
     return (
-        "I already created a payment request for this appointment search, so I resent the same Pay option.\n\n"
-        f"Amount: {pending.quote.amount} {pending.quote.currency}\n"
-        f"Reference: {pending.quote.reference}\n\n"
+        "💳 I already created a payment request for this appointment search, so I resent the same Pay option.\n\n"
+        f"**Amount:** {pending.quote.amount} {pending.quote.currency}\n"
+        f"**Reference:** `{pending.quote.reference}`\n\n"
         "Please click the Pay option in this chat. After payment, I’ll run the live provider/booking search "
         "and send the result here."
     )
@@ -292,12 +292,12 @@ async def _send_appointment_payment_request(ctx: Context, sender: str, quote: Pa
 
 def _intro_message() -> str:
     return (
-        "Hi, I’m CareLoop Appointment Assistant. I find real doctors/clinics and booking links, then help you "
+        "🩺 **Hi, I’m CareLoop Appointment Assistant.** I find real doctors/clinics and booking links, then help you "
         "choose the next step.\n\n"
-        "Try:\n"
+        "**Try:**\n"
         "`Find a primary care doctor near USC Village this week with Medicare.`\n"
         "`Find a dermatologist near Westwood.`\n\n"
-        "I charge a small FET service fee before running the live search."
+        "💳 I charge a small FET service fee before running the live search."
     )
 
 
@@ -379,18 +379,18 @@ def _deterministic_followup_answer(question: str, search: AppointmentSearchQuote
 
     if any(term in normalized for term in ["link", "url", "book", "first one", "second one", "third one"]):
         return (
-            f"{selected.provider_name}\n"
-            f"Booking/check link: {selected.booking_url}\n"
-            f"Phone: {selected.phone or 'not published'}\n"
+            f"🔗 **{selected.provider_name}**\n"
+            f"- Booking/check link: {selected.booking_url}\n"
+            f"- Phone: {selected.phone or 'not published'}\n"
             "Final appointment confirmation happens on the booking page or with the provider."
         )
 
     if "closest" in normalized or "nearest" in normalized:
         return (
-            f"The closest-looking option from the last search is:\n"
-            f"{selected.provider_name}\n"
-            f"Where: {selected.location}\n"
-            f"Link: {selected.booking_url}\n\n"
+            f"📍 **Closest-looking option from the last search**\n\n"
+            f"- Provider: {selected.provider_name}\n"
+            f"- Where: {selected.location}\n"
+            f"- Link: {selected.booking_url}\n\n"
             "I can only rank by the order returned from the live/public source unless exact distances are published."
         )
 
@@ -406,7 +406,7 @@ def _deterministic_followup_answer(question: str, search: AppointmentSearchQuote
 
     if any(term in normalized for term in ["daughter", "son", "caregiver", "tell", "send"]):
         return (
-            f"Caregiver update: I found a {search.specialty} option near {search.location}: "
+            f"👨‍👩‍👧 Caregiver update: I found a {search.specialty} option near {search.location}: "
             f"{selected.provider_name}. Availability: {selected.earliest_available}. "
             f"Cost: {selected.estimated_cost}. Book/check here: {selected.booking_url}. "
             "Please help confirm the slot, insurance, transportation, and any referral/order requirements."
@@ -442,7 +442,7 @@ def appointment_chat_response(ctx: Context, sender: str, text: str) -> str:
     )
     if not is_appointment_intent(text):
         return (
-            "I can help find and prepare appointment booking links. Try asking: "
+            "🩺 I can help find and prepare appointment booking links. Try asking: "
             "`Find a primary care doctor near UCLA this week with Medicare.`"
         )
 

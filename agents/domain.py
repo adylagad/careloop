@@ -378,15 +378,17 @@ def format_otc_payment_prompt(request: CareRequest, quote: PaymentQuote) -> str:
     address_hint = value_from_context(request, "address", value_from_context(request, "location", "Los Angeles, CA"))
     user_need = _infer_otc_need(request.text)
     return (
-        "CareLoop Pharmacy Assistant\n\n"
-        f"I can run a live OTC price comparison for {user_need} near {address_hint}.\n\n"
-        "Service fee required before I search live prices and prepare checkout:\n"
-        f"- Amount: {quote.amount} {quote.currency}\n"
-        f"- Method: {quote.payment_method}\n"
-        f"- Reference: {quote.reference}\n\n"
-        "After payment, I will compare online and pickup options, show the prices I can verify, "
+        "💊 **CareLoop Pharmacy Assistant**\n\n"
+        f"I can run a live OTC price comparison for **{user_need}** near **{address_hint}**.\n\n"
+        "💳 **Service fee required before I search live prices and prepare checkout**\n\n"
+        "| Item | Value |\n"
+        "|---|---:|\n"
+        f"| Amount | {quote.amount} {quote.currency} |\n"
+        f"| Method | {quote.payment_method} |\n"
+        f"| Reference | `{quote.reference}` |\n\n"
+        "After payment, I’ll compare online and pickup options, show the prices I can verify, "
         "recommend the safest reasonable OTC option, and return the checkout handoff.\n\n"
-        "Safety note: this is OTC shopping support, not medical advice. Use the Drug Facts label "
+        "⚠️ **Safety note:** this is OTC shopping support, not medical advice. Use the Drug Facts label "
         "and ask a pharmacist if the patient has other conditions or medicines."
     )
 
@@ -447,13 +449,12 @@ def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
     online_options = order.online_price_options or []
     online_prices = "\n".join(
         (
-            f"- {item.product_name}: {item.price_usd} via {item.merchant}"
-            f" ({item.fulfillment}; {item.source})"
+            f"| {item.product_name} | {item.price_usd} | {item.merchant} | {item.fulfillment} | {item.source} |"
         )
         for item in online_options
     )
     if not online_prices:
-        online_prices = "- No verified online prices found right now."
+        online_prices = "| - | - | - | No verified online prices found right now | - |"
     alternatives = "\n".join(
         f"- {item.name}: {item.reason}"
         for item in order.alternatives
@@ -464,49 +465,52 @@ def format_otc_order_preview(order: PharmacyOrderQuote) -> str:
     offline_options = order.offline_price_options or []
     offline_prices = "\n".join(
         (
-            f"- {item.product_name}: {item.price_usd} via {item.merchant}"
-            f" ({item.fulfillment}; {item.source})"
+            f"| {item.product_name} | {item.price_usd} | {item.merchant} | {item.fulfillment} | {item.source} |"
         )
         for item in offline_options
     )
     if not offline_prices:
         offline_prices = "\n".join(
-            f"- {item}: live shelf price not found; use this for distance/pickup planning."
+            f"| {item} | not public | pickup planning | live shelf price not found | OpenStreetMap |"
             for item in (order.nearby_pharmacies or [])
         )
     if not offline_prices:
-        offline_prices = "- No offline pharmacy price data found."
+        offline_prices = "| - | - | - | No offline pharmacy price data found | - |"
     price_engine = "Browser Use live web search" if order.online_price_options and order.online_price_options[0].source != "Cost Plus Drugs public API" else "public API fallback"
     return (
-        "CareLoop Pharmacy Assistant\n\n"
-        f"Need: {order.user_need}\n"
-        f"Address area: {order.address_hint}\n"
-        f"Location source: {order.location_source}\n\n"
-        f"Price engine: {price_engine}\n"
-        "Price comparison found:\n"
-        "Online prices:\n"
+        "💊 **CareLoop Pharmacy Assistant**\n\n"
+        f"**Need:** {order.user_need}\n"
+        f"**Address area:** {order.address_hint}\n"
+        f"**Location source:** {order.location_source}\n"
+        f"**Price engine:** {price_engine}\n\n"
+        "Price comparison found:\n\n"
+        "📊 **Online prices found**\n\n"
+        "| Product | Price | Merchant | Fulfillment | Source |\n"
+        "|---|---:|---|---|---|\n"
         f"{online_prices}\n\n"
-        "Offline pickup options:\n"
+        "🏪 **Offline pickup options / pickup locations**\n\n"
+        "| Location/Product | Price | Merchant | Fulfillment | Source |\n"
+        "|---|---:|---|---|---|\n"
         f"{offline_prices}\n\n"
-        "Recommended OTC option:\n"
-        f"- Item: {order.product.name} ({order.product.active_ingredient} {order.product.strength})\n"
+        "✅ **Recommended OTC option**\n"
+        f"- **Item:** {order.product.name} ({order.product.active_ingredient} {order.product.strength})\n"
         f"- Package: {order.product.package_size}\n"
         f"- Quantity: {order.quantity}\n"
         f"- Best online quoted subtotal found: {order.subtotal_usd}\n"
         f"- Price source: {order.product.price_source}\n"
         f"- Provider: {order.product.provider}\n"
         f"- Availability: {order.product.availability}\n\n"
-        f"Why this option: {order.product.reason}\n\n"
-        f"Other options considered:\n{alternatives}\n\n"
-        f"Nearby pharmacies from OpenStreetMap:\n{locations}\n\n"
-        f"Checkout handoff: {order.product.checkout_url}\n\n"
-        f"CareLoop service fee: {order.payment_quote.amount} FET via {order.payment_quote.payment_method}\n"
-        f"Payment reference: {order.payment_quote.reference}\n\n"
+        f"**Why this option:** {order.product.reason}\n\n"
+        f"🔁 **Other options considered**\n{alternatives}\n\n"
+        f"📍 **Nearby pharmacies from OpenStreetMap**\n{locations}\n\n"
+        f"🛒 **Checkout handoff:** {order.product.checkout_url}\n\n"
+        f"💳 **CareLoop service fee:** {order.payment_quote.amount} FET via {order.payment_quote.payment_method}\n"
+        f"**Payment reference:** `{order.payment_quote.reference}`\n\n"
         "After FET payment, I create the CareLoop order record and return the checkout handoff. "
         "The final product purchase, shipping address, and card payment happen on the provider checkout page.\n\n"
-        "Offline price note: I only show store prices when the live browser search can read them. "
+        "ℹ️ **Offline price note:** I only show store prices when the live browser search can read them. "
         "Otherwise I show real nearby pharmacy locations for pickup planning.\n\n"
-        f"Safety note: {order.product.safety_note}"
+        f"⚠️ **Safety note:** {order.product.safety_note}"
     )
 
 
@@ -968,13 +972,15 @@ def format_appointment_payment_prompt(request: CareRequest, quote: PaymentQuote)
         else ""
     )
     return (
-        "CareLoop Appointment Assistant\n\n"
-        f"I can run a live appointment search for {specialty} near {location}.{insurance_line}\n\n"
-        "Service fee required before I search live booking pages and public provider records:\n"
-        f"- Amount: {quote.amount} {quote.currency}\n"
-        f"- Method: {quote.payment_method}\n"
-        f"- Reference: {quote.reference}\n\n"
-        "After payment, I will show the real providers/booking links I can verify, visible availability or cost "
+        "🩺 **CareLoop Appointment Assistant**\n\n"
+        f"I can run a live appointment search for **{specialty}** near **{location}**.{insurance_line}\n\n"
+        "💳 **Service fee required before I search live booking pages and public provider records**\n\n"
+        "| Item | Value |\n"
+        "|---|---:|\n"
+        f"| Amount | {quote.amount} {quote.currency} |\n"
+        f"| Method | {quote.payment_method} |\n"
+        f"| Reference | `{quote.reference}` |\n\n"
+        "After payment, I’ll show the real providers/booking links I can verify, visible availability or cost "
         "when published, and the safest next step. I will not claim a booking is confirmed unless a real booking API confirms it."
         f"{imaging_note}"
     )
@@ -1007,13 +1013,9 @@ def format_appointment_search_preview(search: AppointmentSearchQuote) -> str:
     if search.options:
         option_lines = "\n".join(
             (
-                f"{index}. {option.provider_name}\n"
-                f"   Specialty: {option.specialty}\n"
-                f"   Where: {option.location}\n"
-                f"   Availability: {option.earliest_available}\n"
-                f"   Cost: {option.estimated_cost}\n"
-                f"   Phone: {option.phone or 'not published'}\n"
-                f"   Link: {option.booking_url}"
+                f"| {index} | {option.provider_name} | {option.location} | "
+                f"{option.earliest_available} | {option.estimated_cost} | "
+                f"{option.phone or 'not published'} | {option.booking_url} |"
             )
             for index, option in enumerate(search.options[:3], start=1)
         )
@@ -1028,18 +1030,21 @@ def format_appointment_search_preview(search: AppointmentSearchQuote) -> str:
     )
     insurance = search.insurance or "not specified"
     return (
-        "CareLoop Appointment Assistant\n\n"
-        f"Need: {search.specialty}\n"
-        f"Location: {search.location}\n"
-        f"Insurance: {insurance}\n"
-        f"Urgency: {search.urgency}\n\n"
-        f"Real options:\n{option_lines}\n\n"
-        f"Best next step: {selected_text}\n\n"
-        f"{_appointment_context_note(search)}\n\n"
-        f"{_caregiver_appointment_summary(search)}\n\n"
-        f"Sources: {sources}\n"
-        "Cost note: exact patient cost is often hidden until insurance or cash-pay details are checked on the booking page.\n"
-        "Safety note: appointment logistics only, not diagnosis. For emergency symptoms, call emergency services."
+        "🩺 **CareLoop Appointment Assistant**\n\n"
+        f"**Need:** {search.specialty}\n"
+        f"**Location:** {search.location}\n"
+        f"**Insurance:** {insurance}\n"
+        f"**Urgency:** {search.urgency}\n\n"
+        "📍 **Real options**\n\n"
+        "| # | Provider | Location | Availability | Cost | Phone | Link |\n"
+        "|---:|---|---|---|---|---|---|\n"
+        f"{option_lines}\n\n"
+        f"✅ **Best next step:** {selected_text}\n\n"
+        f"ℹ️ **Prep note:** {_appointment_context_note(search)}\n\n"
+        f"👨‍👩‍👧 **Caregiver update:** {_caregiver_appointment_summary(search).removeprefix('Caregiver update: ')}\n\n"
+        f"**Sources:** {sources}\n"
+        "💵 **Cost note:** exact patient cost is often hidden until insurance or cash-pay details are checked on the booking page.\n"
+        "⚠️ **Safety note:** appointment logistics only, not diagnosis. For emergency symptoms, call emergency services."
     )
 
 
@@ -1227,11 +1232,13 @@ def notify_caregiver(request: CareRequest) -> CareResult:
         source_text=request.text,
     )
     summary = (
-        f"Caregiver notification drafted\n"
-        f"Recipient: {caregiver}\n"
-        f"Channel: {channel}\n"
-        f"Urgency: {urgency}\n"
-        f"Event: {event}\n\n"
+        "👨‍👩‍👧 **Caregiver notification drafted**\n\n"
+        "| Field | Value |\n"
+        "|---|---|\n"
+        f"| Recipient | {caregiver} |\n"
+        f"| Channel | {channel} |\n"
+        f"| Urgency | {urgency} |\n"
+        f"| Event | {event} |\n\n"
         f"{message}"
     )
     return CareResult(

@@ -90,13 +90,13 @@ def _is_greeting_or_help(text: str) -> bool:
 
 def _intro_message() -> str:
     return (
-        "Hi, I’m CareLoop Caregiver Notifier. I turn care updates into messages you can send to a family caregiver.\n\n"
-        "I can write:\n"
-        "- short SMS updates\n"
-        "- email summaries\n"
-        "- urgent caregiver alerts\n"
+        "👨‍👩‍👧 **Hi, I’m CareLoop Caregiver Notifier.** I turn care updates into messages you can send to a family caregiver.\n\n"
+        "**I can write:**\n"
+        "- 📱 short SMS updates\n"
+        "- ✉️ email summaries\n"
+        "- 🚨 urgent caregiver alerts\n"
         "- follow-up rewrites like “make it shorter” or “send it to my son instead”\n\n"
-        "Try:\n"
+        "**Try:**\n"
         "`Write an SMS to my daughter that Dad's allergy medicine checkout is ready.`\n"
         "`Write an email to my son that Mom's appointment is booked tomorrow at 10:30 AM.`"
     )

@@ -67,18 +67,21 @@ def _patient_email(request: CareRequest) -> str:
 def _summary(start: datetime, calendar_status: str, link: str | None, patient_email: str) -> str:
     when = start.strftime("%A, %B %-d at %-I:%M %p")
     lines = [
-        "Appointment booked",
-        f"Doctor: {DOCTOR_NAME}",
-        f"Clinic: {CLINIC_NAME}",
-        f"When: {when} {TIMEZONE}",
-        f"Where: {CLINIC_LOCATION}",
-        f"Patient invite: {patient_email}",
-        f"Calendar: {calendar_status}",
+        "✅ **Appointment booked**",
+        "",
+        "| Item | Details |",
+        "|---|---|",
+        f"| Doctor | {DOCTOR_NAME} |",
+        f"| Clinic | {CLINIC_NAME} |",
+        f"| When | {when} {TIMEZONE} |",
+        f"| Where | {CLINIC_LOCATION} |",
+        f"| Patient invite | {patient_email} |",
+        f"| Calendar | {calendar_status} |",
     ]
     if link:
-        lines.append(f"Calendar link: {link}")
+        lines.append(f"| Calendar link | {link} |")
     lines.append(
-        "Safety note: this is scheduling support only. For trouble breathing, chest pain, severe symptoms, or worsening fever, seek urgent care or emergency help."
+        "\n⚠️ **Safety note:** this is scheduling support only. For trouble breathing, chest pain, severe symptoms, or worsening fever, seek urgent care or emergency help."
     )
     return "\n".join(lines)
 

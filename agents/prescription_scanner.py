@@ -206,6 +206,12 @@ def extract_prescription_text(request: PrescriptionDocumentRequest) -> Extracted
         and request.document_text.strip()
         and (not has_document_file or looks_like_prescription_text(request.document_text))
     ):
+        if _looks_like_binary(request.document_text.encode("utf-8", errors="ignore")):
+            return ExtractedPrescription(
+                "",
+                "provided text",
+                ["Provided text looked like binary document data, not readable prescription text."],
+            )
         return ExtractedPrescription(_clean_text(request.document_text), "provided text", warnings)
 
     path: Path | None = None
@@ -491,11 +497,12 @@ def summarize_prescription_text(text: str, source: str, warnings: list[str]) -> 
     if not items:
         warning_lines = "\n".join(f"- {warning}" for warning in warnings) or "- The image/text did not contain a medication name I could identify."
         return (
+            "🧾 **Prescription scan needs a clearer image**\n\n"
             "I couldn’t confidently read a prescription label from this file.\n\n"
             "Please send a closer, sharper photo where the medication name, strength, and directions are visible, "
             "or paste the label text here.\n\n"
-            f"Extraction notes:\n{warning_lines}\n\n"
-            "Safety note: I should not guess medication instructions from an unclear image. "
+            f"**Extraction notes**\n{warning_lines}\n\n"
+            "⚠️ **Safety note:** I should not guess medication instructions from an unclear image. "
             "Please confirm the label with a pharmacist or clinician."
         )
 
@@ -503,38 +510,44 @@ def summarize_prescription_text(text: str, source: str, warnings: list[str]) -> 
     if not warning_lines:
         warning_lines = "- None from document extraction."
 
-    details: list[str] = []
+    details: list[str] = [
+        "| Medication | Dose | Directions | Extra details |",
+        "|---|---:|---|---|",
+    ]
     caregiver_meds: list[str] = []
-    for idx, item in enumerate(items, start=1):
-        details.append(f"{idx}. {item.medication} {item.dose}")
-        details.append(f"   Directions: {item.directions}")
+    for item in items:
+        extra_parts: list[str] = []
         if item.quantity:
-            details.append(f"   Quantity: {item.quantity}")
+            extra_parts.append(f"Qty {item.quantity}")
         if item.refills:
-            details.append(f"   Refills: {item.refills}")
+            extra_parts.append(f"Refills {item.refills}")
         if item.prescriber:
-            details.append(f"   Prescriber: {item.prescriber}")
+            extra_parts.append(f"Prescriber: {item.prescriber}")
         if item.raw_line and " | indication: " in item.raw_line:
-            details.append(f"   For: {item.raw_line.split(' | indication: ', 1)[1]}")
+            extra_parts.append(f"For: {item.raw_line.split(' | indication: ', 1)[1]}")
+        details.append(
+            f"| {item.medication} | {item.dose} | {item.directions} | {', '.join(extra_parts) or '-'} |"
+        )
         caregiver_meds.append(f"{item.medication} {item.dose}")
 
     med_phrase = ", ".join(caregiver_meds)
 
     return (
-        "Here is what I could read from the prescription:\n"
+        "🧾 **Prescription scan summary**\n\n"
+        "Here is what I could read from the prescription:\n\n"
         f"{chr(10).join(details)}\n\n"
-        "In plain English:\n"
+        "✅ **In plain English**\n"
         f"- I found {len(items)} medication label{'s' if len(items) != 1 else ''}: {med_phrase}.\n"
         "- Take each medicine only the way the doctor or pharmacist instructed.\n"
         "- Use a pill organizer or written schedule so doses are not accidentally repeated.\n"
         "- If anything on the label is unclear, ask the pharmacist to read it back slowly before taking the medicine.\n\n"
-        "Before taking it, ask:\n"
+        "❓ **Before taking it, ask**\n"
         "- What time of day should this be taken?\n"
         "- Should it be taken with food?\n"
         "- What should we do if a dose is missed?\n"
         "- Does it interact with other medicines or supplements?\n\n"
-        f"Caregiver note: please help confirm {med_phrase}, directions, and refill timing with the pharmacy.\n\n"
-        f"Extraction notes:\n{warning_lines}\n\n"
-        "Safety note: this is prescription-reading support, not medical advice. "
+        f"👨‍👩‍👧 **Caregiver note:** please help confirm {med_phrase}, directions, and refill timing with the pharmacy.\n\n"
+        f"**Extraction notes**\n{warning_lines}\n\n"
+        "⚠️ **Safety note:** this is prescription-reading support, not medical advice. "
         "Confirm all medication instructions with the prescribing clinician or pharmacist before use."
     )

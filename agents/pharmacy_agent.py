@@ -239,9 +239,9 @@ def _load_paid_order(ctx: Context | None, sender: str) -> tuple[str | None, Phar
 
 def _pending_payment_message(pending: PendingOrderPayment) -> str:
     return (
-        "I already created a payment request for this OTC search, so I resent the same Pay option.\n\n"
-        f"Amount: {pending.quote.amount} {pending.quote.currency}\n"
-        f"Reference: {pending.quote.reference}\n\n"
+        "💳 I already created a payment request for this OTC search, so I resent the same Pay option.\n\n"
+        f"**Amount:** {pending.quote.amount} {pending.quote.currency}\n"
+        f"**Reference:** `{pending.quote.reference}`\n\n"
         "Please click the Pay option in this chat. After the payment is confirmed, "
         "I’ll run the live price comparison and send the result here. I won’t create a second payment request."
     )
@@ -292,12 +292,13 @@ def _fallback_followup_answer(question: str, order: PharmacyOrderQuote) -> str:
             options = "- I could not fetch live nearby pharmacy locations right now."
             nearest = "nearest store unavailable"
         return (
-            f"For pickup near {pickup.address}, the nearest real pharmacy I found is: {nearest}.\n\n"
-            f"Nearby options:\n{options}\n\n"
-            f"Medicine context: {order.product.name} ({order.product.active_ingredient} {order.product.strength}). "
+            f"📍 **Pickup near {pickup.address}**\n\n"
+            f"Nearest real pharmacy I found: {nearest}\n\n"
+            f"**Nearby options**\n{options}\n\n"
+            f"**Medicine context:** {order.product.name} ({order.product.active_ingredient} {order.product.strength}). "
             f"Real online quote I found earlier: {order.subtotal_usd} from {order.product.price_source}. "
             "Local store inventory and shelf price are not public through OpenStreetMap, so confirm availability at the store before going.\n\n"
-            f"Safety note: {order.product.safety_note}"
+            f"⚠️ **Safety note:** {order.product.safety_note}"
         )
 
     return (
@@ -380,16 +381,16 @@ def pharmacy_chat_response(ctx: Context, sender: str, text: str) -> str:
     normalized = " ".join(text.lower().split())
     if normalized in {"hi", "hello", "hey", "help", "what can you do"}:
         return (
-            "Hi, I’m CareLoop’s OTC pharmacy assistant. Tell me what symptom or OTC "
+            "💊 **Hi, I’m CareLoop’s OTC pharmacy assistant.** Tell me what symptom or OTC "
             "medicine you need and your address area, and I’ll recommend an option and prepare checkout.\n\n"
-            "Examples:\n"
+            "**Examples:**\n"
             "`Find the best allergy medicine near Westwood.`\n"
             "`Order Tylenol for delivery to Santa Monica.`"
         )
 
     if is_pharmacy_status_intent(text):
         return (
-            "I only handle over-the-counter medicine recommendations and orders. "
+            "💊 I only handle over-the-counter medicine recommendations and orders. "
             "Prescription status belongs in the CareLoop orchestrator flow, where it can use the patient's care context."
         )
 
@@ -406,7 +407,7 @@ def pharmacy_chat_response(ctx: Context, sender: str, text: str) -> str:
 
     if not is_otc_order_intent(text):
         return (
-            "I can help with over-the-counter medicine only. Try asking something like "
+            "💊 I can help with over-the-counter medicine only. Try asking something like "
             "`Find the best allergy medicine near Westwood` or `Order Tylenol for delivery`."
         )
 

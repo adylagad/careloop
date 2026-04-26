@@ -248,12 +248,12 @@ def _format_prescription_summary(summary: str) -> str:
     summary = (summary or "").strip()
     if not summary:
         return (
-            "I couldn't extract a clear prescription. Please send a sharper photo, a PDF with text, "
-            f"or paste the label text.\n\n{SAFETY_NOTE}"
+            "🧾 I couldn't extract a clear prescription. Please send a sharper photo, a PDF with text, "
+            f"or paste the label text.\n\n⚠️ {SAFETY_NOTE}"
         )
     if "pharmacist or clinician" in summary.lower():
         return summary
-    return f"{summary}\n\n{SAFETY_NOTE}"
+    return f"{summary}\n\n⚠️ {SAFETY_NOTE}"
 
 
 def handle_media(config: TelegramConfig, incoming: TelegramIncoming) -> str:
@@ -282,14 +282,13 @@ def handle_media(config: TelegramConfig, incoming: TelegramIncoming) -> str:
 
 def _format_pay_card(pending: PendingTelegramPayment) -> str:
     return (
-        "FET payment inside Telegram\n\n"
+        "💳 FET payment inside Telegram\n\n"
         f"Amount: {pending.quote.amount} FET (Fetch.ai stable testnet)\n"
         f"Recipient: {pending.recipient}\n"
         f"Memo / reference: {pending.quote.reference}\n\n"
-        "Two ways to pay:\n"
+        "Choose one:\n"
         "1. Reply /pay to have the demo wallet send the testnet FET for you.\n"
-        "2. Open your Fetch.ai wallet on the stable testnet, send the amount above to "
-        "the recipient with that exact memo, then reply /paid <tx-hash> to verify.\n\n"
+        "2. Pay manually from your Fetch.ai stable-testnet wallet, then reply /paid <tx-hash>.\n\n"
         f"Recipient explorer: {explorer_address_url(pending.recipient)}"
     )
 
@@ -341,7 +340,7 @@ def _finalize_payment(chat_id: int, sender: str, pending: PendingTelegramPayment
     PENDING_PAYMENTS.pop(chat_id, None)
     explorer = f"\nExplorer: {explorer_tx_url(tx_hash)}" if tx_hash else ""
     header = (
-        f"FET payment confirmed ({detail}).\n"
+        f"✅ FET payment confirmed ({detail}).\n"
         f"Tx: {tx_hash or 'demo-tx'}{explorer}\n\n"
         "Running the CareLoop live search now...\n\n"
     )
@@ -413,11 +412,11 @@ def handle_text(config: TelegramConfig, chat_id: int | str, text: str) -> str:
         return f"Your Telegram chat id is {chat_id}."
     if normalized in {"/start", "/help"}:
         return (
-            "Hi, I’m CareLoop on Telegram. Tell me what you need help with.\n\n"
+            "👋 Hi, I’m CareLoop on Telegram. Tell me what you need help with.\n\n"
             "Try: I have a bad cough near USC. Can you book me a doctor tomorrow morning?\n\n"
-            "You can also send a prescription photo or PDF and I’ll explain it in plain language. "
+            "🧾 You can also send a prescription photo or PDF and I’ll explain it in plain language. "
             "Follow-up questions stay stateful, so you can ask things like ‘when do I take these?’.\n\n"
-            "Paid live searches use FET on the Fetch.ai stable testnet. After I quote a service fee, "
+            "💳 Paid live searches use FET on the Fetch.ai stable testnet. After I quote a service fee, "
             "reply /pay (auto-pay from the demo wallet) or /paid <tx-hash> (after a manual transfer).\n\n"
             "Send /whoami if you want the chat id for TELEGRAM_ALLOWED_CHAT_IDS."
         )
