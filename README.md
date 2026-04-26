@@ -221,6 +221,21 @@ GOOGLE_CALENDAR_PATIENT_EMAIL=adyhacks@gmail.com
 DOCTOR_OFFICE_AGENT_ADDRESS=
 ```
 
+## OmegaClaw Telegram Demo
+
+For Track 2, `agents/telegram_omegaclaw_bridge.py` provides a Telegram channel bridge
+for the CareLoop orchestrator. It lets a Telegram user ask for care coordination, routes
+the request into CareLoop, and returns the result back in Telegram. Use the
+doctor-office flow for the cleanest end-to-end OmegaClaw demo because it creates a real
+Google Calendar appointment after user confirmation.
+
+```bash
+python agents/telegram_omegaclaw_bridge.py
+```
+
+See `agents/readmes/omegaclaw_telegram.md` for setup steps, demo script, and the Track 2
+submission checklist.
+
 ## MCP Servers (Claude Code)
 
 Both Agentverse MCP servers are pre-configured:

@@ -66,6 +66,7 @@ from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat
 from triage_agent import TRIAGE_CONTEXT_BY_SENDER, triage_chat_response  # noqa: E402
 import orchestrator_agent  # noqa: E402
 from orchestrator_agent import ORCHESTRATOR_CONTEXT_BY_SENDER, OrchestratorSession, orchestrator_chat_response  # noqa: E402
+from telegram_omegaclaw_bridge import split_telegram_message, telegram_sender_id  # noqa: E402
 import email_delivery  # noqa: E402
 
 
@@ -862,6 +863,15 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("not medical advice", prescription.summary)
         self.assertEqual(orchestrated.agent_name, "careloop-orchestrator")
         self.assertIn("Prescription explained", orchestrated.timeline_events)
+
+    def test_telegram_bridge_sender_and_split_helpers(self):
+        self.assertEqual(telegram_sender_id(12345), "telegram:12345")
+
+        long_text = "CareLoop update " * 400
+        chunks = split_telegram_message(long_text)
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 3900 for chunk in chunks))
 
     def test_prescription_document_text_explains_actual_label_text(self):
         request = PrescriptionDocumentRequest(
