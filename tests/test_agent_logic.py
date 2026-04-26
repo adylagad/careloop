@@ -34,7 +34,9 @@ from domain import (  # noqa: E402
     pharmacy_monitoring_result,
     pharmacy_status_update_result,
     pharmacy_unpaid_result,
+    triage_emergency_reason,
     triage_request,
+    triage_route,
 )
 from models import CareRequest, PaymentQuote, PrescriptionDocumentRequest  # noqa: E402
 from appointment_agent import (  # noqa: E402
@@ -52,6 +54,7 @@ from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  #
 from pharmacy_agent import PAYMENT_REQUEST_VERSION, PendingOrderPayment, _load_pending_by_sender, _pending_payment_message, _pending_requires_refresh, _request_fingerprint, _store_pending, pending_by_sender, pending_orders  # noqa: E402
 from pharmacy_data import _parse_browser_price_text  # noqa: E402
 from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat_response  # noqa: E402
+from triage_agent import TRIAGE_CONTEXT_BY_SENDER, triage_chat_response  # noqa: E402
 
 
 class AgentLogicTests(unittest.TestCase):
@@ -454,6 +457,39 @@ class AgentLogicTests(unittest.TestCase):
 
         self.assertEqual(result.status, "urgent_escalation")
         self.assertIn("Call emergency services now.", result.next_actions)
+        self.assertEqual(triage_emergency_reason("face drooping and slurred speech"), "possible stroke symptoms")
+
+    def test_triage_routes_specialists(self):
+        cases = [
+            ("Please explain this prescription label", "careloop-prescription-explainer"),
+            ("Find the best allergy medicine near UCLA", "careloop-pharmacy-assistant"),
+            ("Find an MRI scan near USC Village", "careloop-appointment-assistant"),
+            ("Write a text to my daughter that Dad's appointment is booked", "careloop-caregiver-notifier"),
+            ("Remind me to take metformin every morning", "careloop-adherence"),
+            ("Is my prescription ready at CVS?", "careloop-orchestrator"),
+        ]
+
+        for text, route in cases:
+            with self.subTest(text=text):
+                self.assertEqual(triage_route(text)["route"], route)
+
+    def test_triage_chat_is_stateful_for_short_followup(self):
+        sender = "triage-followup-user"
+        TRIAGE_CONTEXT_BY_SENDER.pop(sender, None)
+
+        first = triage_chat_response(None, sender, "I need a doctor for knee pain")
+        second = triage_chat_response(None, sender, "near USC with Medicare")
+
+        self.assertIn("@careloop-appointment-assistant", first)
+        self.assertIn("@careloop-appointment-assistant", second)
+        self.assertIn(sender, TRIAGE_CONTEXT_BY_SENDER)
+
+    def test_triage_chat_greeting_and_clarify(self):
+        greeting = triage_chat_response(None, "triage-hi-user", "hi")
+        unclear = triage_chat_response(None, "triage-unclear-user", "I am not sure")
+
+        self.assertIn("CareLoop Triage", greeting)
+        self.assertIn("I need one detail", unclear)
 
     def test_prescription_and_orchestrator_outputs(self):
         request = self.make_request("Explain lisinopril 10mg and book a doctor")

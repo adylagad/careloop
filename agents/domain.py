@@ -38,6 +38,7 @@ PHARMACY_ASSISTANT_AGENT_NAME = "careloop-pharmacy-assistant"
 OTC_ORDER_SERVICE_FEE_FET = "0.1"
 APPOINTMENT_SERVICE_FEE_FET = "0.1"
 APPOINTMENT_AGENT_NAME = "careloop-appointment-assistant"
+TRIAGE_AGENT_NAME = "careloop-triage"
 
 
 def make_case_id(prefix: str = "case") -> str:
@@ -1218,43 +1219,177 @@ def notify_caregiver_from_result(result: CareResult, context: dict | None = None
 
 def triage_request(request: CareRequest) -> CareResult:
     normalized = normalize_text(request.text)
-    emergency_terms = {
-        "chest pain",
-        "stroke",
-        "can't breathe",
-        "cannot breathe",
-        "severe bleeding",
-        "unconscious",
-        "fainting",
-    }
-    if any(term in normalized for term in emergency_terms):
+    emergency_reason = triage_emergency_reason(request.text)
+    if emergency_reason:
         return CareResult(
             case_id=request.case_id,
-            agent_name="careloop-triage",
+            agent_name=TRIAGE_AGENT_NAME,
             status="urgent_escalation",
             summary=(
-                "This may be an emergency. CareLoop should not automate this request. "
+                f"This may be an emergency ({emergency_reason}). CareLoop should not automate this request. "
                 "Call 911 or local emergency services immediately."
             ),
-            next_actions=["Call emergency services now.", "Notify caregiver immediately."],
+            next_actions=[
+                "Call emergency services now.",
+                "Notify caregiver immediately.",
+                "Do not wait for an agent workflow if symptoms are severe or worsening.",
+            ],
             timeline_events=["Emergency language detected", "Automation stopped"],
         )
 
-    if "prescription" in normalized or "medication" in normalized or "pharmacy" in normalized:
-        route = "careloop-prescription-explainer"
-    elif "appointment" in normalized or "doctor" in normalized or "clinic" in normalized:
-        route = "careloop-appointment-booking"
-    else:
-        route = "careloop-appointment-booking"
+    decision = triage_route(request.text)
+    route = decision["route"]
+    confidence = decision["confidence"]
+    rationale = decision["rationale"]
 
     return CareResult(
         case_id=request.case_id,
-        agent_name="careloop-triage",
-        status="completed",
-        summary=f"Request is non-emergency and should route to {route}.",
-        next_actions=[f"Route case to {route}.", "Keep caregiver in the loop."],
+        agent_name=TRIAGE_AGENT_NAME,
+        status="needs_clarification" if route == "clarify" else "completed",
+        summary=(
+            f"Route: {route}\n"
+            f"Confidence: {confidence}\n"
+            f"Reason: {rationale}"
+        ),
+        next_actions=triage_next_actions(route),
         timeline_events=["Triage completed", f"Route selected: {route}"],
     )
+
+
+def triage_emergency_reason(text: str) -> str | None:
+    normalized = normalize_text(text)
+    emergency_terms = {
+        "chest pain": "chest pain",
+        "pressure in chest": "possible chest pain",
+        "stroke": "possible stroke symptoms",
+        "face drooping": "possible stroke symptoms",
+        "slurred speech": "possible stroke symptoms",
+        "can't breathe": "trouble breathing",
+        "cannot breathe": "trouble breathing",
+        "trouble breathing": "trouble breathing",
+        "severe allergic reaction": "possible severe allergic reaction",
+        "throat swelling": "possible severe allergic reaction",
+        "severe bleeding": "severe bleeding",
+        "unconscious": "unconsciousness",
+        "fainting": "fainting",
+        "confused suddenly": "sudden confusion",
+        "worst headache": "severe sudden headache",
+        "suicidal": "self-harm risk",
+        "overdose": "possible overdose",
+    }
+    for term, reason in emergency_terms.items():
+        if term in normalized:
+            return reason
+    return None
+
+
+def triage_route(text: str) -> dict[str, str]:
+    normalized = normalize_text(text)
+    if _looks_like_caregiver_request(normalized):
+        return {
+            "route": "careloop-caregiver-notifier",
+            "confidence": "high",
+            "rationale": "The user wants a family/caregiver message or update drafted.",
+        }
+    if is_pharmacy_status_intent(text):
+        return {
+            "route": "careloop-orchestrator",
+            "confidence": "medium",
+            "rationale": "Prescription readiness needs patient/pharmacy context owned by the orchestrator flow.",
+        }
+    if _looks_like_prescription_request(normalized):
+        return {
+            "route": "careloop-prescription-explainer",
+            "confidence": "high",
+            "rationale": "The user is asking about a prescription label, medication instructions, or uploaded prescription document.",
+        }
+    if is_otc_order_intent(text):
+        return {
+            "route": PHARMACY_ASSISTANT_AGENT_NAME,
+            "confidence": "high",
+            "rationale": "The user is asking to find, compare, or order over-the-counter medicine.",
+        }
+    if is_appointment_intent(text):
+        return {
+            "route": APPOINTMENT_AGENT_NAME,
+            "confidence": "high",
+            "rationale": "The user needs a doctor, clinic, imaging, or appointment booking/search handoff.",
+        }
+    if _looks_like_adherence_request(normalized):
+        return {
+            "route": "careloop-adherence",
+            "confidence": "high",
+            "rationale": "The user is asking about reminders, missed doses, or a medication schedule.",
+        }
+    return {
+        "route": "clarify",
+        "confidence": "low",
+        "rationale": "The request does not clearly match prescription, pharmacy, appointment, caregiver, or adherence support.",
+    }
+
+
+def triage_next_actions(route: str) -> list[str]:
+    actions = {
+        "careloop-prescription-explainer": [
+            "Route to @careloop-prescription-explainer.",
+            "Ask the user to upload/paste the prescription label if not already provided.",
+        ],
+        PHARMACY_ASSISTANT_AGENT_NAME: [
+            "Route to @careloop-pharmacy-options for OTC search/order.",
+            "Expect a FET payment card before live price search.",
+        ],
+        APPOINTMENT_AGENT_NAME: [
+            "Route to @careloop-appointment-assistant.",
+            "Expect a FET payment card before live appointment/provider search.",
+        ],
+        "careloop-caregiver-notifier": [
+            "Route to @careloop-caregiver-notifier.",
+            "Include recipient, channel, urgency, and care event if known.",
+        ],
+        "careloop-adherence": [
+            "Route to @careloop-adherence.",
+            "Collect medication name, schedule, and caregiver escalation preference.",
+        ],
+        "careloop-orchestrator": [
+            "Route to the CareLoop orchestrator when patient/pharmacy context is required.",
+            "Avoid asking the patient to know hidden e-prescription details.",
+        ],
+        "clarify": [
+            "Ask one short clarifying question.",
+            "Offer prescription, OTC pharmacy, appointment, caregiver update, or reminder routing choices.",
+        ],
+    }
+    return actions.get(route, [f"Route case to {route}.", "Keep caregiver in the loop."])
+
+
+def _looks_like_caregiver_request(normalized: str) -> bool:
+    return any(term in normalized for term in ["tell my", "text my", "message my", "send my", "caregiver", "daughter", "son"]) and any(
+        term in normalized for term in ["update", "tell", "text", "message", "send", "notify", "write"]
+    )
+
+
+def _looks_like_prescription_request(normalized: str) -> bool:
+    return any(
+        term in normalized
+        for term in [
+            "prescription",
+            "rx",
+            "pill bottle",
+            "label",
+            "dosage",
+            "dose",
+            "directions",
+            "side effects",
+            "interactions",
+            "take this medication",
+            "what is this medication",
+            "explain this medicine",
+        ]
+    )
+
+
+def _looks_like_adherence_request(normalized: str) -> bool:
+    return any(term in normalized for term in ["remind", "reminder", "missed dose", "missed my", "schedule my medicine", "took my pill", "taken"])
 
 
 def build_adherence_plan(request: CareRequest) -> CareResult:

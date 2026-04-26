@@ -33,7 +33,9 @@ layer is included yet.
 - `careloop-caregiver-notifier` — OmegaClaw-friendly caregiver update specialist. It
   turns care events or upstream `CareResult` messages into SMS/email-style caregiver
   notifications with urgency labels, clear next steps, and medication-safety language.
-- `careloop-triage` — non-emergency routing and emergency escalation guardrails.
+- `careloop-triage` — stateful front-door router. It blocks emergency-like requests
+  with escalation guidance, then routes non-emergency prescription, OTC pharmacy,
+  appointment, caregiver, and reminder requests to the right specialist handle.
 - `careloop-adherence` — mocked medication reminder and missed-dose escalation plan.
 - `careloop-orchestrator` — ASI:One-facing care timeline coordinator.
 
@@ -117,6 +119,22 @@ Example ASI:One prompts:
 Write an SMS to my daughter that Dad's allergy medicine checkout is ready.
 Write an email to my son that Mom's doctor appointment is booked tomorrow at 10:30 AM.
 Urgent caregiver alert: Mom has chest pain and cannot breathe.
+```
+
+## Triage Agent
+
+`careloop-triage` is the ASI:One front door for CareLoop. It remembers recent chat
+context, blocks emergency-like symptoms, and routes non-emergency requests to the right
+specialist.
+
+Example ASI:One prompts:
+
+```text
+Find an MRI scan near USC Village.
+Find allergy medicine near UCLA.
+Is my prescription ready at CVS?
+Tell my daughter Dad's appointment is booked.
+My dad has chest pain and cannot breathe.
 ```
 
 ## Appointment Assistant Agent
