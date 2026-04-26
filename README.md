@@ -142,8 +142,9 @@ My dad has chest pain and cannot breathe.
 ## Orchestrator Agent
 
 `careloop-orchestrator` is the demo-facing CareLoop coordinator. It is stateful, starts
-with triage, keeps a visible care timeline, and prepares explicit handoffs to paid
-specialists.
+with triage, keeps a visible care timeline, and can own the FET payment card for paid
+appointment/pharmacy searches so the user does not need to paste the same query into a
+specialist chat.
 
 Example ASI:One prompts:
 
@@ -153,8 +154,8 @@ Write a text to my daughter that Dad's appointment is booked tomorrow.
 timeline
 ```
 
-Paid live searches remain in `@careloop-pharmacy-options` and
-`@careloop-appointment-assistant` so ASI:One can show the native FET payment card.
+The specialist agents still work independently, but the orchestrator can run the same
+appointment/pharmacy logic after its own payment card is completed.
 
 ## Appointment Assistant Agent
 

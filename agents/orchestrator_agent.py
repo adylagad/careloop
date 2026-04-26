@@ -1,15 +1,36 @@
+import os
 from dataclasses import dataclass, field
 from time import time
+from typing import Any
 
 from uagents import Context, Protocol
+from uagents_core.contrib.protocols.payment import (
+    CancelPayment,
+    CommitPayment,
+    CompletePayment,
+    Funds,
+    RejectPayment,
+    RequestPayment,
+    payment_protocol_spec,
+)
 
-from chat_protocol import create_chat_protocol
+from chat_protocol import create_chat_protocol, create_text_chat
 from config import create_careloop_agent, env_int
 from domain import (
     APPOINTMENT_AGENT_NAME,
+    APPOINTMENT_SERVICE_FEE_FET,
     PHARMACY_ASSISTANT_AGENT_NAME,
+    OTC_ORDER_SERVICE_FEE_FET,
     build_adherence_plan,
+    build_appointment_payment_quote,
+    build_appointment_search_quote,
+    build_otc_order_quote,
+    build_otc_service_payment_quote,
     explain_prescription,
+    format_appointment_payment_prompt,
+    format_appointment_search_preview,
+    format_otc_order_preview,
+    format_otc_payment_prompt,
     make_case_id,
     notify_caregiver,
     orchestrate_care,
@@ -17,7 +38,7 @@ from domain import (
     triage_request,
     triage_route,
 )
-from models import CareRequest, CareResult
+from models import CareRequest, CareResult, PaymentQuote
 
 
 AGENT_NAME = "careloop-orchestrator"
@@ -35,9 +56,13 @@ agent = create_careloop_agent(
     readme_path="agents/readmes/orchestrator.md",
 )
 
-care_proto = Protocol(name="CareLoopOrchestratorProtocol", version="0.2.0")
+care_proto = Protocol(name="CareLoopOrchestratorProtocol", version="0.3.0")
+payment_proto = Protocol(spec=payment_protocol_spec, role="seller")
 ORCHESTRATOR_CONTEXT_BY_SENDER: dict[str, "OrchestratorSession"] = {}
 MAX_ORCHESTRATOR_CONTEXTS = 100
+PAYMENT_REQUEST_DEADLINE_SECONDS = 300
+PAYMENT_EXPIRY_SECONDS = PAYMENT_REQUEST_DEADLINE_SECONDS - 15
+PAYMENT_REQUEST_VERSION = "orchestrator-paid-work-v1"
 
 
 @dataclass
@@ -47,6 +72,21 @@ class OrchestratorSession:
     last_text: str = ""
     timeline: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time)
+
+
+@dataclass
+class PendingOrchestratorPayment:
+    original_sender: str
+    request: CareRequest
+    route: str
+    quote: PaymentQuote
+    request_fingerprint: str
+    created_at: float
+    request_version: str
+
+
+pending_payments: dict[str, PendingOrchestratorPayment] = {}
+pending_by_sender: dict[str, str] = {}
 
 
 def _session(sender: str) -> OrchestratorSession:
@@ -59,6 +99,115 @@ def _session(sender: str) -> OrchestratorSession:
     created = OrchestratorSession(case_id=make_case_id("careloop"))
     ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = created
     return created
+
+
+def _model_dump(model) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    if hasattr(model, "dict"):
+        return model.dict()
+    return dict(model)
+
+
+def _request_fingerprint(request: CareRequest, route: str) -> str:
+    normalized = " ".join(request.text.lower().split())
+    return f"{route}|{normalized}"
+
+
+def _pending_key(reference: str) -> str:
+    return f"orchestrator:pending:{reference}"
+
+
+def _pending_by_sender_key(sender: str) -> str:
+    return f"orchestrator:pending-by-sender:{sender}"
+
+
+def _pending_to_dict(pending: PendingOrchestratorPayment) -> dict[str, Any]:
+    return {
+        "original_sender": pending.original_sender,
+        "request": _model_dump(pending.request),
+        "route": pending.route,
+        "quote": _model_dump(pending.quote),
+        "request_fingerprint": pending.request_fingerprint,
+        "created_at": pending.created_at,
+        "request_version": pending.request_version,
+    }
+
+
+def _pending_from_dict(data: dict[str, Any]) -> PendingOrchestratorPayment:
+    return PendingOrchestratorPayment(
+        original_sender=str(data["original_sender"]),
+        request=CareRequest(**data["request"]),
+        route=str(data["route"]),
+        quote=PaymentQuote(**data["quote"]),
+        request_fingerprint=str(data["request_fingerprint"]),
+        created_at=float(data["created_at"]),
+        request_version=str(data.get("request_version") or "legacy"),
+    )
+
+
+def _is_pending_expired(pending: PendingOrchestratorPayment) -> bool:
+    return time() - pending.created_at > PAYMENT_EXPIRY_SECONDS
+
+
+def _store_pending(ctx: Context | None, pending: PendingOrchestratorPayment) -> None:
+    old_reference = pending_by_sender.pop(pending.original_sender, None)
+    if old_reference:
+        pending_payments.pop(old_reference, None)
+        if ctx is not None:
+            ctx.storage.remove(_pending_key(old_reference))
+
+    pending_payments[pending.quote.reference] = pending
+    pending_by_sender[pending.original_sender] = pending.quote.reference
+    if ctx is not None:
+        ctx.storage.set(_pending_key(pending.quote.reference), _pending_to_dict(pending))
+        ctx.storage.set(_pending_by_sender_key(pending.original_sender), pending.quote.reference)
+
+
+def _remove_pending(ctx: Context | None, pending: PendingOrchestratorPayment) -> None:
+    pending_payments.pop(pending.quote.reference, None)
+    if pending_by_sender.get(pending.original_sender) == pending.quote.reference:
+        pending_by_sender.pop(pending.original_sender, None)
+    if ctx is not None:
+        ctx.storage.remove(_pending_key(pending.quote.reference))
+        if ctx.storage.get(_pending_by_sender_key(pending.original_sender)) == pending.quote.reference:
+            ctx.storage.remove(_pending_by_sender_key(pending.original_sender))
+
+
+def _load_pending_by_reference(ctx: Context | None, reference: str) -> PendingOrchestratorPayment | None:
+    pending = pending_payments.get(reference)
+    if pending is None and ctx is not None:
+        data = ctx.storage.get(_pending_key(reference))
+        if data:
+            pending = _pending_from_dict(data)
+            pending_payments[reference] = pending
+            pending_by_sender[pending.original_sender] = reference
+    if pending and _is_pending_expired(pending):
+        _remove_pending(ctx, pending)
+        return None
+    return pending
+
+
+def _load_pending_by_sender(ctx: Context | None, sender: str) -> PendingOrchestratorPayment | None:
+    reference = pending_by_sender.get(sender)
+    if reference is None and ctx is not None:
+        reference = ctx.storage.get(_pending_by_sender_key(sender))
+        if reference:
+            pending_by_sender[sender] = reference
+    if not reference:
+        return None
+    return _load_pending_by_reference(ctx, reference)
+
+
+def _pending_requires_refresh(pending: PendingOrchestratorPayment, fingerprint: str) -> bool:
+    expected_amount = APPOINTMENT_SERVICE_FEE_FET if pending.route == APPOINTMENT_AGENT_NAME else OTC_ORDER_SERVICE_FEE_FET
+    return (
+        pending.request_fingerprint != fingerprint
+        or pending.request_version != PAYMENT_REQUEST_VERSION
+        or pending.quote.amount != expected_amount
+        or pending.quote.currency != "FET"
+        or pending.quote.payment_method != "fet_direct"
+    )
 
 
 def _is_greeting_or_help(text: str) -> bool:
@@ -141,6 +290,112 @@ def _paid_handoff(route: str, text: str, session: OrchestratorSession, reason: s
     )
 
 
+def _build_paid_quote(route: str, request: CareRequest) -> PaymentQuote:
+    if route == APPOINTMENT_AGENT_NAME:
+        quote = build_appointment_payment_quote(request)
+        quote.service_name = "CareLoop Orchestrated Appointment Search"
+        quote.reference = quote.reference.replace("careloop-appointment-search-", "careloop-orchestrator-appointment-")
+        return quote
+    quote = build_otc_service_payment_quote(request)
+    quote.service_name = "CareLoop Orchestrated OTC Search"
+    quote.reference = quote.reference.replace("careloop-otc-order-", "careloop-orchestrator-otc-")
+    return quote
+
+
+def _format_paid_payment_prompt(route: str, request: CareRequest, quote: PaymentQuote, session: OrchestratorSession) -> str:
+    specialist = _specialist_handle(route)
+    base = (
+        format_appointment_payment_prompt(request, quote)
+        if route == APPOINTMENT_AGENT_NAME
+        else format_otc_payment_prompt(request, quote)
+    )
+    return (
+        f"{base}\n\n"
+        f"CareLoop will handle this directly here after payment, using {specialist} logic. "
+        "You do not need to paste the query again.\n\n"
+        f"{_format_timeline(session)}"
+    )
+
+
+async def _send_payment_request(ctx: Context, sender: str, route: str, quote: PaymentQuote) -> None:
+    use_testnet = os.getenv("FET_USE_TESTNET", "true").lower() == "true"
+    agent_wallet_address = ""
+    try:
+        agent_wallet_address = str(agent.wallet.address())
+    except Exception:
+        agent_wallet_address = ""
+    recipient = agent_wallet_address or str(ctx.agent.address)
+    service = "careloop_orchestrated_appointment_search" if route == APPOINTMENT_AGENT_NAME else "careloop_orchestrated_otc_search"
+    metadata: dict[str, str] = {
+        "agent": AGENT_NAME,
+        "service": service,
+        "fet_network": "stable-testnet" if use_testnet else "mainnet",
+        "mainnet": "false" if use_testnet else "true",
+        "content": (
+            "Please complete the FET payment to let CareLoop run the live specialist search in this chat. "
+            "After payment, CareLoop will return the result here."
+        ),
+    }
+    if agent_wallet_address:
+        metadata["provider_agent_wallet"] = agent_wallet_address
+
+    payment_request = RequestPayment(
+        accepted_funds=[
+            Funds(
+                amount=quote.amount,
+                currency=quote.currency,
+                payment_method=quote.payment_method,
+            )
+        ],
+        recipient=recipient,
+        deadline_seconds=PAYMENT_REQUEST_DEADLINE_SECONDS,
+        reference=quote.reference,
+        description=f"{quote.service_name} service fee",
+        metadata=metadata,
+    )
+    ctx.logger.info(f"{AGENT_NAME}: sending FET payment request to {sender}: {payment_request}")
+    await ctx.send(sender, payment_request)
+
+
+async def _begin_paid_work(
+    ctx: Context,
+    sender: str,
+    route: str,
+    request: CareRequest,
+    session: OrchestratorSession,
+) -> str:
+    fingerprint = _request_fingerprint(request, route)
+    pending = _load_pending_by_sender(ctx, sender)
+    if pending:
+        if _pending_requires_refresh(pending, fingerprint):
+            ctx.logger.info(f"{AGENT_NAME}: refreshing stale pending payment {pending.quote.reference}")
+            _remove_pending(ctx, pending)
+        else:
+            await _send_payment_request(ctx, sender, route, pending.quote)
+            return (
+                "I already created a CareLoop payment request for this search, so I resent the same Pay option.\n\n"
+                f"Amount: {pending.quote.amount} {pending.quote.currency}\n"
+                f"Reference: {pending.quote.reference}\n\n"
+                "After payment, I’ll run the specialist search here. You do not need to paste the query again.\n\n"
+                f"{_format_timeline(session)}"
+            )
+
+    quote = _build_paid_quote(route, request)
+    pending = PendingOrchestratorPayment(
+        original_sender=sender,
+        request=request,
+        route=route,
+        quote=quote,
+        request_fingerprint=fingerprint,
+        created_at=time(),
+        request_version=PAYMENT_REQUEST_VERSION,
+    )
+    _store_pending(ctx, pending)
+    session.timeline.append(f"Payment requested for orchestrated {route}")
+    await _send_payment_request(ctx, sender, route, quote)
+    return _format_paid_payment_prompt(route, request, quote, session)
+
+
 def _local_result(route: str, request: CareRequest) -> CareResult:
     if route == "careloop-prescription-explainer":
         return explain_prescription(request)
@@ -151,7 +406,81 @@ def _local_result(route: str, request: CareRequest) -> CareResult:
     return triage_request(request)
 
 
-def _orchestrator_answer(sender: str, text: str) -> str:
+def _complete_paid_work(pending: PendingOrchestratorPayment, session: OrchestratorSession) -> str:
+    request = pending.request
+    if pending.route == APPOINTMENT_AGENT_NAME:
+        search = build_appointment_search_quote(request, pending.quote)
+        session.timeline.append("Appointment search completed after FET payment")
+        return (
+            f"{format_appointment_search_preview(search)}\n\n"
+            f"{_format_timeline(session)}"
+        )
+
+    order = build_otc_order_quote(request, pending.quote)
+    session.timeline.append("OTC pharmacy search completed after FET payment")
+    return (
+        f"{format_otc_order_preview(order)}\n\n"
+        f"{_format_timeline(session)}"
+    )
+
+
+async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> str:
+    session = _session(sender)
+    if _is_greeting_or_help(text):
+        return _intro_message()
+    if _is_timeline_request(text):
+        return _format_timeline(session)
+
+    emergency_reason = triage_emergency_reason(text)
+    if emergency_reason:
+        session.timeline.append(f"Emergency stop: {emergency_reason}")
+        return (
+            f"This may be an emergency ({emergency_reason}). Call 911 or local emergency services now.\n\n"
+            "CareLoop should not automate this. Notify a caregiver immediately if you can do so without delaying care.\n\n"
+            f"{_format_timeline(session)}"
+        )
+
+    combined_text = f"{session.last_text}\nFollow-up detail: {text}" if session.last_text and _is_short_followup(text) else text
+    decision = triage_route(combined_text)
+    route = decision["route"]
+    session.last_route = route
+    session.last_text = combined_text
+    session.timeline.append(f"Triage route: {route} ({decision['confidence']})")
+
+    request = CareRequest(case_id=session.case_id, user_id=sender, text=combined_text)
+    if route in {PHARMACY_ASSISTANT_AGENT_NAME, APPOINTMENT_AGENT_NAME}:
+        if ctx is None:
+            return _paid_handoff(route, combined_text, session, decision["rationale"])
+        return await _begin_paid_work(ctx, sender, route, request, session)
+
+    if route == "careloop-orchestrator":
+        session.timeline.append("Prescription-readiness flow held for orchestrator context")
+        return (
+            "CareLoop can coordinate prescription readiness, but the standalone prescription status connector is still mocked.\n\n"
+            "For the demo, I’ll keep this as an orchestrator-owned timeline item instead of asking the older adult to know hidden e-prescription details.\n\n"
+            f"{_format_timeline(session)}"
+        )
+
+    if route == "clarify":
+        session.timeline.append("Clarification requested")
+        return (
+            "I need one detail before coordinating this.\n\n"
+            "Is this about a prescription, OTC medicine, an appointment, a caregiver update, or a medication reminder?\n\n"
+            f"{_format_timeline(session)}"
+        )
+
+    result = _local_result(route, request)
+    session.timeline.extend(result.timeline_events or [])
+    next_actions = "\n".join(f"- {action}" for action in result.next_actions)
+    return (
+        f"CareLoop handled this with {_specialist_handle(route)}.\n\n"
+        f"{result.summary}\n\n"
+        f"Next actions:\n{next_actions}\n\n"
+        f"{_format_timeline(session)}"
+    )
+
+
+def _orchestrator_answer_preview(sender: str, text: str) -> str:
     session = _session(sender)
     if _is_greeting_or_help(text):
         return _intro_message()
@@ -206,7 +535,9 @@ def _orchestrator_answer(sender: str, text: str) -> str:
 
 
 def orchestrator_chat_response(ctx: Context, sender: str, text: str) -> str:
-    return _orchestrator_answer(sender, text)
+    if ctx is None:
+        return _orchestrator_answer_preview(sender, text)
+    return _orchestrator_answer(ctx, sender, text)
 
 
 @care_proto.on_message(CareRequest)
@@ -221,6 +552,57 @@ async def handle_care_result(ctx: Context, sender: str, msg: CareResult):
     ctx.logger.info(f"{AGENT_NAME}: received specialist result from {sender}: {msg.status}")
 
 
+@payment_proto.on_message(CommitPayment)
+async def handle_payment_commit(ctx: Context, sender: str, msg: CommitPayment):
+    reference = msg.reference or ""
+    pending = None
+    for candidate in [reference, msg.transaction_id]:
+        if candidate:
+            pending = _load_pending_by_reference(ctx, candidate)
+            if pending is not None:
+                break
+    if pending is None:
+        pending = _load_pending_by_sender(ctx, sender)
+
+    if pending is None:
+        await ctx.send(
+            sender,
+            CancelPayment(
+                transaction_id=msg.transaction_id,
+                reason="Payment session not found or expired. Please send the CareLoop request again.",
+            ),
+        )
+        return
+
+    session = _session(pending.original_sender)
+    session.timeline.append(f"FET payment completed: {pending.quote.amount} {pending.quote.currency}")
+    result_text = _complete_paid_work(pending, session)
+    _remove_pending(ctx, pending)
+    await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id or pending.quote.reference))
+    await ctx.send(pending.original_sender, create_text_chat(result_text))
+    ctx.logger.info(f"{AGENT_NAME}: completed orchestrated paid work for {pending.quote.reference}")
+
+
+@payment_proto.on_message(RejectPayment)
+async def handle_payment_reject(ctx: Context, sender: str, msg: RejectPayment):
+    pending = _load_pending_by_sender(ctx, sender)
+    if pending is None:
+        ctx.logger.warning(f"{AGENT_NAME}: reject from {sender} had no pending request")
+        return
+
+    session = _session(pending.original_sender)
+    session.timeline.append(f"FET payment rejected for {pending.route}")
+    _remove_pending(ctx, pending)
+    reason = msg.reason or "payment rejected"
+    await ctx.send(
+        sender,
+        create_text_chat(
+            f"Payment was not completed, so I did not run the live search. Reason: {reason}\n\n"
+            f"{_format_timeline(session)}"
+        ),
+    )
+
+
 @agent.on_event("startup")
 async def startup(ctx: Context):
     ctx.logger.info(f"{AGENT_NAME} address: {ctx.agent.address}")
@@ -229,6 +611,7 @@ async def startup(ctx: Context):
 
 agent.include(create_chat_protocol(AGENT_NAME, orchestrator_chat_response), publish_manifest=True)
 agent.include(care_proto, publish_manifest=True)
+agent.include(payment_proto, publish_manifest=True)
 
 
 if __name__ == "__main__":
