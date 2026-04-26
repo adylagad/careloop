@@ -232,11 +232,45 @@ def _is_timeline_request(text: str) -> bool:
     return any(term in normalized for term in ["timeline", "status", "what happened", "summary so far"])
 
 
-def _is_result_followup(text: str) -> bool:
-    normalized = " ".join(text.lower().split())
+def _message_text(text: str) -> str:
+    normalized = " ".join(text.split())
     if normalized.startswith("@"):
         parts = normalized.split(maxsplit=1)
-        normalized = parts[1] if len(parts) > 1 else ""
+        return parts[1] if len(parts) > 1 else ""
+    return normalized
+
+
+def _is_caregiver_message_request(text: str) -> bool:
+    normalized = _message_text(text).lower()
+    recipient_terms = [
+        "caregiver",
+        "daughter",
+        "son",
+        "wife",
+        "husband",
+        "sister",
+        "brother",
+        "mom",
+        "dad",
+        "family",
+    ]
+    message_terms = [
+        "write",
+        "draft",
+        "message",
+        "text",
+        "tell",
+        "notify",
+        "send",
+        "let her know",
+        "let him know",
+        "let them know",
+    ]
+    return any(term in normalized for term in recipient_terms) and any(term in normalized for term in message_terms)
+
+
+def _is_result_followup(text: str) -> bool:
+    normalized = _message_text(text).lower()
     followup_terms = [
         "closest",
         "nearest",
@@ -261,10 +295,9 @@ def _is_result_followup(text: str) -> bool:
 
 
 def _is_short_followup(text: str) -> bool:
-    normalized = " ".join(text.lower().split())
-    if normalized.startswith("@"):
-        parts = normalized.split(maxsplit=1)
-        normalized = parts[1] if len(parts) > 1 else ""
+    if _is_caregiver_message_request(text):
+        return False
+    normalized = _message_text(text).lower()
     return len(normalized.split()) <= 10 and any(
         term in normalized
         for term in [
@@ -357,7 +390,7 @@ def _answer_from_appointment_context(text: str, search: AppointmentSearchQuote) 
     if option is None:
         return "I don’t have a saved appointment option from the last search yet."
 
-    normalized = " ".join(text.lower().split())
+    normalized = _message_text(text).lower()
     if any(term in normalized for term in ["closest", "nearest", "location", "where", "which one", "best one"]):
         details = [
             f"The closest/best option from the results I found is {option.provider_name}.",
@@ -388,7 +421,7 @@ def _answer_from_appointment_context(text: str, search: AppointmentSearchQuote) 
 
 
 def _answer_from_otc_context(text: str, order: PharmacyOrderQuote) -> str:
-    normalized = " ".join(text.lower().split())
+    normalized = _message_text(text).lower()
     if any(term in normalized for term in ["closest", "nearest", "location", "pickup", "where"]):
         first = (order.nearby_pharmacies or [None])[0]
         if first:
@@ -412,6 +445,34 @@ def _answer_saved_followup(session: OrchestratorSession, text: str) -> str | Non
     ):
         return _answer_from_otc_context(text, session.last_otc_order)
     return None
+
+
+def _caregiver_context_text(session: OrchestratorSession, text: str) -> str:
+    base = _message_text(text)
+    if session.last_appointment_search is not None:
+        option = session.last_appointment_search.selected_option or (
+            session.last_appointment_search.options[0] if session.last_appointment_search.options else None
+        )
+        if option is not None:
+            return (
+                f"{base}\n\n"
+                f"Current appointment option: {option.provider_name} at {option.location}. "
+                f"Booking link: {option.booking_url}. "
+                "Status: patient is reviewing or preparing to book."
+            )
+    if session.last_otc_order is not None:
+        order = session.last_otc_order
+        return (
+            f"{base}\n\n"
+            f"Current pharmacy option: {order.product.name} {order.product.strength} from {order.product.provider}. "
+            f"Estimated total: {order.total_usd}. Checkout link: {order.checkout_url}."
+        )
+    return base
+
+
+def _format_caregiver_draft(result: CareResult) -> str:
+    draft = result.summary.split("\n\n", 1)[1] if "\n\n" in result.summary else result.summary
+    return f"Here’s a caregiver message you can send:\n\n{draft}"
 
 
 def _payment_card_content(route: str, quote: PaymentQuote) -> str:
@@ -553,6 +614,15 @@ async def _orchestrator_answer(ctx: Context | None, sender: str, text: str) -> s
         return _intro_message()
     if _is_timeline_request(text):
         return _format_timeline(session)
+    if _is_caregiver_message_request(text):
+        request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
+        result = notify_caregiver(request)
+        session.last_route = "careloop-caregiver-notifier"
+        session.last_text = _message_text(text)
+        _add_timeline(session, "Triage route: careloop-caregiver-notifier (high)")
+        for event in result.timeline_events or []:
+            _add_timeline(session, event)
+        return _format_caregiver_draft(result)
     if _is_result_followup(text):
         saved_answer = _answer_saved_followup(session, text)
         if saved_answer:
@@ -611,6 +681,15 @@ def _orchestrator_answer_preview(sender: str, text: str) -> str:
         return _intro_message()
     if _is_timeline_request(text):
         return _format_timeline(session)
+    if _is_caregiver_message_request(text):
+        request = CareRequest(case_id=session.case_id, user_id=sender, text=_caregiver_context_text(session, text))
+        result = notify_caregiver(request)
+        session.last_route = "careloop-caregiver-notifier"
+        session.last_text = _message_text(text)
+        _add_timeline(session, "Triage route: careloop-caregiver-notifier (high)")
+        for event in result.timeline_events or []:
+            _add_timeline(session, event)
+        return _format_caregiver_draft(result)
     if _is_result_followup(text):
         saved_answer = _answer_saved_followup(session, text)
         if saved_answer:

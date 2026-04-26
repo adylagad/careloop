@@ -514,9 +514,9 @@ class AgentLogicTests(unittest.TestCase):
             "Write a text to my daughter that Dad's appointment is booked tomorrow",
         )
 
-        self.assertIn("@careloop-caregiver-notifier", response)
-        self.assertIn("Caregiver notification drafted", response)
-        self.assertIn("CareLoop timeline", response)
+        self.assertIn("Here’s a caregiver message", response)
+        self.assertIn("daughter", response)
+        self.assertNotIn("CareLoop timeline", response)
 
     def test_orchestrator_blocks_emergency(self):
         response = orchestrator_chat_response(None, "orchestrator-emergency-user", "My dad has chest pain")
@@ -559,6 +559,49 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("USC Imaging Center", response)
         self.assertIn("1234 Jefferson Blvd", response)
         self.assertNotIn("I need one detail", response)
+
+    def test_orchestrator_caregiver_message_wins_over_booking_followup(self):
+        sender = "orchestrator-caregiver-after-appointment-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+        session = OrchestratorSession(case_id="careloop-test")
+        ORCHESTRATOR_CONTEXT_BY_SENDER[sender] = session
+        option = AppointmentOption(
+            provider_name="UCLA Health",
+            specialty="primary care",
+            location="100 UCLA Medical Plaza, Los Angeles, CA",
+            phone="310-555-0100",
+            booking_url="https://example.com/ucla",
+            source="test",
+        )
+        session.last_text = "i have a bad cough right now. can you find a doctor near UCLA main campus. i am nearby"
+        session.last_paid_route = "careloop-appointment-assistant"
+        session.last_appointment_search = AppointmentSearchQuote(
+            case_id=session.case_id,
+            specialty="primary care",
+            location="UCLA",
+            options=[option],
+            selected_option=option,
+            data_sources=["test"],
+            status="booking_handoff_ready",
+            payment_quote=PaymentQuote(
+                case_id=session.case_id,
+                service_name="CareLoop Appointment Search",
+                amount="0.1",
+                reference="test-ref",
+            ),
+        )
+
+        response = orchestrator_chat_response(
+            None,
+            sender,
+            "can you write a message to my daughter and let her know that i am booking an appointment",
+        )
+
+        self.assertIn("Here’s a caregiver message", response)
+        self.assertIn("daughter", response)
+        self.assertIn("UCLA Health", response)
+        self.assertNotIn("Use this booking/search link", response)
+        self.assertNotIn("bad cough", response)
 
     def test_prescription_and_orchestrator_outputs(self):
         request = self.make_request("Explain lisinopril 10mg and book a doctor")
