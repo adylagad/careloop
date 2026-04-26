@@ -20,6 +20,8 @@ from domain import (  # noqa: E402
     format_otc_order_preview,
     is_otc_order_intent,
     is_pharmacy_status_intent,
+    notify_caregiver,
+    notify_caregiver_from_result,
     otc_order_paid_result,
     orchestrate_care,
     pharmacy_monitoring_result,
@@ -230,6 +232,43 @@ class AgentLogicTests(unittest.TestCase):
         self.assertEqual(len(parsed), 2)
         self.assertEqual(parsed[0].merchant, "Walmart")
         self.assertEqual(parsed[1].price_usd, "$2.00")
+
+    def test_caregiver_notifier_drafts_sms_update(self):
+        result = notify_caregiver(
+            self.make_request(
+                "Dad's OTC allergy medicine checkout is ready and needs confirmation.",
+                {"caregiver": "daughter", "patient_name": "Dad", "channel": "sms"},
+            )
+        )
+
+        self.assertEqual(result.agent_name, "careloop-caregiver-notifier")
+        self.assertEqual(result.status, "action_needed")
+        self.assertIn("daughter", result.summary)
+        self.assertIn("Dad", result.summary)
+        self.assertIn("confirm", result.summary.lower())
+
+    def test_caregiver_notifier_marks_urgent_alert(self):
+        result = notify_caregiver(
+            self.make_request(
+                "Mom has chest pain and cannot breathe",
+                {"caregiver": "son", "patient_name": "Mom"},
+            )
+        )
+
+        self.assertEqual(result.status, "urgent")
+        self.assertIn("URGENT", result.summary)
+        self.assertIn("emergency", result.summary.lower())
+
+    def test_caregiver_notifier_accepts_care_result(self):
+        source = self.make_request("Appointment booked")
+        care_result = notify_caregiver(source)
+        update = notify_caregiver_from_result(
+            care_result,
+            {"caregiver": "family caregiver", "patient_name": "the patient", "channel": "email", "urgency": "info"},
+        )
+
+        self.assertIn("Subject:", update.summary)
+        self.assertIn("Source agent", update.summary)
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))

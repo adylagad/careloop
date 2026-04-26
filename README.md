@@ -28,7 +28,9 @@ layer is included yet.
   charges a FET service fee, creates an order record, and returns checkout handoff.
 - `careloop-prescription-explainer` — senior-friendly mocked prescription explanations.
 - `careloop-appointment-booking` — mocked doctor search, booking, and prep checklist.
-- `careloop-caregiver-notifier` — SMS/email-style caregiver updates.
+- `careloop-caregiver-notifier` — OmegaClaw-friendly caregiver update specialist. It
+  turns care events or upstream `CareResult` messages into SMS/email-style caregiver
+  notifications with urgency labels, clear next steps, and medication-safety language.
 - `careloop-triage` — non-emergency routing and emergency escalation guardrails.
 - `careloop-adherence` — mocked medication reminder and missed-dose escalation plan.
 - `careloop-orchestrator` — ASI:One-facing care timeline coordinator.
@@ -95,6 +97,21 @@ For local testing, a plain chat prompt can reference a local file:
 ```text
 file:/absolute/path/to/prescription.pdf
 Please explain this for my elderly mother.
+```
+
+## Caregiver Notifier Agent
+
+`careloop-caregiver-notifier` is independently usable from ASI:One and accepts
+structured `CareRequest` or `CareResult` messages from other agents. It detects SMS vs
+email, caregiver role, patient name, urgency, and care-event type, then drafts a
+caregiver-ready update.
+
+Example ASI:One prompts:
+
+```text
+Write an SMS to my daughter that Dad's allergy medicine checkout is ready.
+Write an email to my son that Mom's doctor appointment is booked tomorrow at 10:30 AM.
+Urgent caregiver alert: Mom has chest pain and cannot breathe.
 ```
 
 ## MCP Servers (Claude Code)

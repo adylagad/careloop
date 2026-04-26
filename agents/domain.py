@@ -859,24 +859,145 @@ def book_appointment(request: CareRequest) -> CareResult:
     )
 
 
+def _infer_caregiver_channel(text: str, context: dict | None) -> str:
+    if context and context.get("channel"):
+        return str(context["channel"]).lower()
+    normalized = normalize_text(text)
+    if any(term in normalized for term in ["email", "mail"]):
+        return "email"
+    return "sms"
+
+
+def _infer_caregiver_recipient(text: str, context: dict | None) -> str:
+    if context and context.get("caregiver"):
+        return str(context["caregiver"])
+    normalized = normalize_text(text)
+    for label in ["daughter", "son", "wife", "husband", "sister", "brother", "mom", "dad"]:
+        if label in normalized:
+            return label
+    return "family caregiver"
+
+
+def _infer_patient_name(context: dict | None) -> str:
+    if context and context.get("patient_name"):
+        return str(context["patient_name"])
+    return "the patient"
+
+
+def _infer_notification_urgency(text: str, context: dict | None) -> str:
+    if context and context.get("urgency"):
+        return str(context["urgency"]).lower()
+    normalized = normalize_text(text)
+    if any(term in normalized for term in ["emergency", "911", "cannot breathe", "chest pain", "severe", "urgent"]):
+        return "urgent"
+    if any(
+        term in normalized
+        for term in ["payment", "checkout", "confirm", "pickup", "appointment", "booked", "ready", "missed", "refill"]
+    ):
+        return "action_needed"
+    return "info"
+
+
+def _infer_care_event(text: str) -> str:
+    normalized = normalize_text(text)
+    if any(term in normalized for term in ["pharmacy", "otc", "medicine", "medication", "prescription", "checkout"]):
+        return "medication/pharmacy update"
+    if any(term in normalized for term in ["appointment", "doctor", "clinic", "visit"]):
+        return "appointment update"
+    if any(term in normalized for term in ["reminder", "missed", "taken", "dose"]):
+        return "medication reminder update"
+    if any(term in normalized for term in ["emergency", "urgent", "chest pain", "cannot breathe"]):
+        return "urgent care alert"
+    return "care coordination update"
+
+
+def _shorten_event_text(text: str, limit: int = 240) -> str:
+    cleaned = " ".join(text.replace("\n", " ").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
+def _caregiver_message(
+    *,
+    caregiver: str,
+    patient_name: str,
+    event: str,
+    urgency: str,
+    channel: str,
+    source_text: str,
+) -> str:
+    brief = _shorten_event_text(source_text, 220 if channel == "sms" else 420)
+    if urgency == "urgent":
+        return (
+            f"URGENT: Please check on {patient_name} now. CareLoop flagged this as an urgent care alert: "
+            f"{brief} If symptoms may be serious, call emergency services or seek emergency care now."
+        )
+    if channel == "email":
+        return (
+            f"Subject: CareLoop {event} for {patient_name}\n\n"
+            f"Hi {caregiver},\n\n"
+            f"CareLoop has an update for {patient_name}: {brief}\n\n"
+            "Suggested next step: please confirm you saw this and help with any pickup, checkout, "
+            "transportation, or medication questions if needed.\n\n"
+            "Safety note: this is coordination support, not medical advice. Confirm medication or clinical "
+            "instructions with a pharmacist or clinician."
+        )
+    return (
+        f"CareLoop update for {caregiver}: {patient_name} has a {event}. {brief} "
+        "Please confirm you saw this and help with the next step if needed. "
+        "Confirm medication or clinical instructions with a pharmacist or clinician."
+    )
+
+
 def notify_caregiver(request: CareRequest) -> CareResult:
-    caregiver = value_from_context(request, "caregiver", "family caregiver")
+    context = request.context or {}
+    caregiver = _infer_caregiver_recipient(request.text, context)
+    patient_name = _infer_patient_name(context)
+    channel = _infer_caregiver_channel(request.text, context)
+    urgency = _infer_notification_urgency(request.text, context)
+    event = _infer_care_event(request.text)
+    message = _caregiver_message(
+        caregiver=caregiver,
+        patient_name=patient_name,
+        event=event,
+        urgency=urgency,
+        channel=channel,
+        source_text=request.text,
+    )
     summary = (
-        f"Caregiver update for {caregiver}: CareLoop has coordinated the latest step. "
-        f"Patient request: {request.text}. Please check in today and confirm any transportation, "
-        "pickup, or medication questions."
+        f"Caregiver notification drafted\n"
+        f"Recipient: {caregiver}\n"
+        f"Channel: {channel}\n"
+        f"Urgency: {urgency}\n"
+        f"Event: {event}\n\n"
+        f"{message}"
     )
     return CareResult(
         case_id=request.case_id,
         agent_name="careloop-caregiver-notifier",
-        status="completed",
+        status=urgency,
         summary=summary,
         next_actions=[
-            "Send SMS-style caregiver update.",
+            f"Send {channel}-style caregiver update.",
             "Ask caregiver to confirm receipt.",
+            "Escalate if the caregiver does not respond and the update is urgent.",
         ],
-        timeline_events=["Caregiver notification drafted"],
+        timeline_events=[f"Caregiver notification drafted: {urgency}"],
     )
+
+
+def notify_caregiver_from_result(result: CareResult, context: dict | None = None) -> CareResult:
+    request = CareRequest(
+        case_id=result.case_id,
+        user_id="careloop-system",
+        text=(
+            f"Source agent: {result.agent_name}. Status: {result.status}. "
+            f"Summary: {result.summary}. Next actions: {'; '.join(result.next_actions)}"
+        ),
+        context=context,
+    )
+    return notify_caregiver(request)
 
 
 def triage_request(request: CareRequest) -> CareResult:
