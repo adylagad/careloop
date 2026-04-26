@@ -55,6 +55,7 @@ from pharmacy_agent import PAYMENT_REQUEST_VERSION, PendingOrderPayment, _load_p
 from pharmacy_data import _parse_browser_price_text  # noqa: E402
 from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat_response  # noqa: E402
 from triage_agent import TRIAGE_CONTEXT_BY_SENDER, triage_chat_response  # noqa: E402
+from orchestrator_agent import ORCHESTRATOR_CONTEXT_BY_SENDER, orchestrator_chat_response  # noqa: E402
 
 
 class AgentLogicTests(unittest.TestCase):
@@ -490,6 +491,38 @@ class AgentLogicTests(unittest.TestCase):
 
         self.assertIn("CareLoop Triage", greeting)
         self.assertIn("I need one detail", unclear)
+
+    def test_orchestrator_routes_paid_specialist_with_timeline(self):
+        sender = "orchestrator-paid-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        response = orchestrator_chat_response(None, sender, "Find an MRI scan near USC Village")
+        timeline = orchestrator_chat_response(None, sender, "timeline")
+
+        self.assertIn("@careloop-appointment-assistant", response)
+        self.assertIn("FET payment card", response)
+        self.assertIn("CareLoop timeline", response)
+        self.assertIn("Paid specialist handoff", timeline)
+
+    def test_orchestrator_handles_local_caregiver_flow(self):
+        sender = "orchestrator-caregiver-user"
+        ORCHESTRATOR_CONTEXT_BY_SENDER.pop(sender, None)
+
+        response = orchestrator_chat_response(
+            None,
+            sender,
+            "Write a text to my daughter that Dad's appointment is booked tomorrow",
+        )
+
+        self.assertIn("@careloop-caregiver-notifier", response)
+        self.assertIn("Caregiver notification drafted", response)
+        self.assertIn("CareLoop timeline", response)
+
+    def test_orchestrator_blocks_emergency(self):
+        response = orchestrator_chat_response(None, "orchestrator-emergency-user", "My dad has chest pain")
+
+        self.assertIn("Call 911", response)
+        self.assertIn("Emergency stop", response)
 
     def test_prescription_and_orchestrator_outputs(self):
         request = self.make_request("Explain lisinopril 10mg and book a doctor")

@@ -37,7 +37,9 @@ layer is included yet.
   with escalation guidance, then routes non-emergency prescription, OTC pharmacy,
   appointment, caregiver, and reminder requests to the right specialist handle.
 - `careloop-adherence` — mocked medication reminder and missed-dose escalation plan.
-- `careloop-orchestrator` — ASI:One-facing care timeline coordinator.
+- `careloop-orchestrator` — ASI:One-facing coordinator. It runs triage, keeps a
+  visible care timeline, handles safe local flows, and sends paid work to the pharmacy
+  or appointment specialist handles so FET cards render in the right chat.
 
 For local payment testing, run `payment_buyer_agent.py` as a demo buyer after setting
 `PHARMACY_ASSISTANT_AGENT_ADDRESS` to the pharmacy assistant address. Set
@@ -136,6 +138,23 @@ Is my prescription ready at CVS?
 Tell my daughter Dad's appointment is booked.
 My dad has chest pain and cannot breathe.
 ```
+
+## Orchestrator Agent
+
+`careloop-orchestrator` is the demo-facing CareLoop coordinator. It is stateful, starts
+with triage, keeps a visible care timeline, and prepares explicit handoffs to paid
+specialists.
+
+Example ASI:One prompts:
+
+```text
+Find an MRI scan near USC Village.
+Write a text to my daughter that Dad's appointment is booked tomorrow.
+timeline
+```
+
+Paid live searches remain in `@careloop-pharmacy-options` and
+`@careloop-appointment-assistant` so ASI:One can show the native FET payment card.
 
 ## Appointment Assistant Agent
 
