@@ -1,5 +1,12 @@
 # CareLoop Telegram Prescription Intake Plan
 
+> Status: implemented in `agents/telegram_omegaclaw_bridge.py`. The bridge now
+> parses Telegram photos/documents (PDF, JPEG, PNG, WEBP, AVIF), downloads the
+> file via `getFile`, hands the bytes to `_scan_and_remember`, and routes
+> follow-up text through `prescription_chat_response` so questions stay
+> stateful. See the `test_telegram_*` and
+> `test_telegram_handle_media_*` cases in `tests/test_agent_logic.py`.
+
 ## Goal
 
 Make the Telegram/OmegaClaw demo handle prescription photos and PDFs directly:

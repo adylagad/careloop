@@ -12,6 +12,7 @@ the payment with ``/pay`` (auto from the demo wallet) or ``/paid <tx-hash>``
 """
 from __future__ import annotations
 
+import base64
 import os
 import logging
 import time
@@ -21,11 +22,17 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
-from models import CareRequest, PaymentQuote
+from domain import make_case_id
+from models import CareRequest, PaymentQuote, PrescriptionDocumentRequest
 from orchestrator_agent import (
     orchestrator_chat_response,
     telegram_complete_paid_work,
     telegram_pending_paid_quote,
+)
+from prescription_agent import (
+    PRESCRIPTION_CONTEXT_BY_SENDER,
+    _scan_and_remember,
+    prescription_chat_response,
 )
 from telegram_fet_payment import (
     auto_send_testnet_fet,
@@ -41,9 +48,21 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/{method}"
+TELEGRAM_FILE_BASE = "https://api.telegram.org/file/bot{token}/{file_path}"
 DEFAULT_POLL_SECONDS = 1.5
 MAX_TELEGRAM_MESSAGE_LENGTH = 3900
 PAID_HANDOFF_MARKER = "FET CareLoop service fee"
+SUPPORTED_DOCUMENT_CONTENT_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/webp",
+    "image/avif",
+}
+SAFETY_NOTE = (
+    "Please confirm medication timing and changes with the pharmacist or clinician."
+)
 
 
 @dataclass
@@ -63,6 +82,16 @@ class PendingTelegramPayment:
 
 
 PENDING_PAYMENTS: dict[int, PendingTelegramPayment] = {}
+
+
+@dataclass
+class TelegramIncoming:
+    chat_id: int | None
+    text: str | None
+    file_id: str | None = None
+    content_type: str | None = None
+    filename: str | None = None
+    unsupported_reason: str | None = None
 
 
 def load_config() -> TelegramConfig:
@@ -118,12 +147,137 @@ def send_message(config: TelegramConfig, chat_id: int | str, text: str) -> None:
         response.raise_for_status()
 
 
-def _update_text(update: dict[str, Any]) -> tuple[int | None, str | None]:
+def _best_photo_file_id(message: dict[str, Any]) -> str | None:
+    photos = message.get("photo") or []
+    if not photos:
+        return None
+    best = max(
+        photos,
+        key=lambda item: (
+            item.get("file_size") or 0,
+            (item.get("width") or 0) * (item.get("height") or 0),
+        ),
+    )
+    return best.get("file_id")
+
+
+def _update_incoming(update: dict[str, Any]) -> TelegramIncoming:
     message = update.get("message") or update.get("edited_message") or {}
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
     text = message.get("text")
-    return chat_id, text
+    caption = message.get("caption")
+
+    document = message.get("document")
+    if document:
+        content_type = (document.get("mime_type") or "").lower() or None
+        filename = document.get("file_name")
+        if content_type and content_type not in SUPPORTED_DOCUMENT_CONTENT_TYPES:
+            return TelegramIncoming(
+                chat_id=chat_id,
+                text=caption,
+                unsupported_reason=(
+                    f"Unsupported document type: {content_type}. Please send a PDF, JPEG, PNG, "
+                    "WEBP, or AVIF prescription, or paste the label text."
+                ),
+                filename=filename,
+            )
+        return TelegramIncoming(
+            chat_id=chat_id,
+            text=caption,
+            file_id=document.get("file_id"),
+            content_type=content_type,
+            filename=filename,
+        )
+
+    photo_file_id = _best_photo_file_id(message)
+    if photo_file_id:
+        return TelegramIncoming(
+            chat_id=chat_id,
+            text=caption,
+            file_id=photo_file_id,
+            content_type="image/jpeg",
+        )
+
+    if message.get("voice") or message.get("audio") or message.get("video") or message.get("video_note"):
+        return TelegramIncoming(
+            chat_id=chat_id,
+            text=caption,
+            unsupported_reason=(
+                "I can read prescription photos, PDFs, or pasted text. Please send one of those."
+            ),
+        )
+
+    return TelegramIncoming(chat_id=chat_id, text=text)
+
+
+def download_telegram_file(config: TelegramConfig, file_id: str) -> tuple[bytes, str | None]:
+    response = httpx.get(
+        telegram_api_url(config.token, "getFile"),
+        params={"file_id": file_id},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("ok"):
+        raise RuntimeError(f"getFile failed: {payload}")
+    file_path = (payload.get("result") or {}).get("file_path") or ""
+    if not file_path:
+        raise RuntimeError("Telegram getFile did not return a file_path.")
+    file_url = TELEGRAM_FILE_BASE.format(token=config.token, file_path=file_path)
+    download = httpx.get(file_url, timeout=60)
+    download.raise_for_status()
+
+    suffix_to_type = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".avif": "image/avif",
+    }
+    derived_type = None
+    for suffix, content_type in suffix_to_type.items():
+        if file_path.lower().endswith(suffix):
+            derived_type = content_type
+            break
+    return download.content, derived_type
+
+
+def _format_prescription_summary(summary: str) -> str:
+    summary = (summary or "").strip()
+    if not summary:
+        return (
+            "I couldn't extract a clear prescription. Please send a sharper photo, a PDF with text, "
+            f"or paste the label text.\n\n{SAFETY_NOTE}"
+        )
+    if "pharmacist or clinician" in summary.lower():
+        return summary
+    return f"{summary}\n\n{SAFETY_NOTE}"
+
+
+def handle_media(config: TelegramConfig, incoming: TelegramIncoming) -> str:
+    if incoming.unsupported_reason:
+        return incoming.unsupported_reason
+    if not incoming.file_id or incoming.chat_id is None:
+        return "I couldn't read that attachment. Please send a prescription photo, PDF, or pasted text."
+
+    sender = telegram_sender_id(incoming.chat_id)
+    try:
+        data, derived_type = download_telegram_file(config, incoming.file_id)
+    except Exception as exc:
+        return f"Could not download the attachment from Telegram: {exc}"
+
+    content_type = incoming.content_type or derived_type
+    request = PrescriptionDocumentRequest(
+        case_id=make_case_id("telegram-rx"),
+        user_id=sender,
+        document_text=incoming.text or None,
+        document_base64=base64.b64encode(data).decode("utf-8"),
+        content_type=content_type,
+    )
+    result = _scan_and_remember(None, sender, request)
+    return _format_prescription_summary(result.summary)
 
 
 def _format_pay_card(pending: PendingTelegramPayment) -> str:
@@ -261,6 +415,8 @@ def handle_text(config: TelegramConfig, chat_id: int | str, text: str) -> str:
         return (
             "Hi, I’m CareLoop on Telegram. Tell me what you need help with.\n\n"
             "Try: I have a bad cough near USC. Can you book me a doctor tomorrow morning?\n\n"
+            "You can also send a prescription photo or PDF and I’ll explain it in plain language. "
+            "Follow-up questions stay stateful, so you can ask things like ‘when do I take these?’.\n\n"
             "Paid live searches use FET on the Fetch.ai stable testnet. After I quote a service fee, "
             "reply /pay (auto-pay from the demo wallet) or /paid <tx-hash> (after a manual transfer).\n\n"
             "Send /whoami if you want the chat id for TELEGRAM_ALLOWED_CHAT_IDS."
@@ -275,6 +431,11 @@ def handle_text(config: TelegramConfig, chat_id: int | str, text: str) -> str:
         return _handle_paid_command(int(chat_id), sender, args)
     if command in {"/payment", "/paycard", "/fet"}:
         return _handle_payment_status(int(chat_id))
+
+    if sender in PRESCRIPTION_CONTEXT_BY_SENDER and not normalized.startswith("/"):
+        prescription_response = prescription_chat_response(None, sender, normalized)
+        if prescription_response:
+            return _format_prescription_summary(prescription_response)
 
     response = orchestrator_chat_response(None, sender, normalized)
     response = response or "I’m still coordinating that. Please send one more detail."
@@ -310,13 +471,21 @@ def run_bridge() -> None:
             payload = response.json()
             for update in payload.get("result", []):
                 offset = int(update["update_id"]) + 1
-                chat_id, text = _update_text(update)
-                if chat_id is None or not text:
+                incoming = _update_incoming(update)
+                chat_id = incoming.chat_id
+                if chat_id is None:
                     continue
                 if not is_allowed_chat(config, chat_id):
                     send_message(config, chat_id, "This CareLoop demo bot is restricted to approved Telegram chats.")
                     continue
-                answer = handle_text(config, chat_id, text)
+                if incoming.file_id:
+                    answer = handle_media(config, incoming)
+                elif incoming.unsupported_reason:
+                    answer = incoming.unsupported_reason
+                elif incoming.text:
+                    answer = handle_text(config, chat_id, incoming.text)
+                else:
+                    continue
                 send_message(config, chat_id, answer)
         except KeyboardInterrupt:
             raise

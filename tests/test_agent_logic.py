@@ -66,7 +66,17 @@ from prescription_agent import PRESCRIPTION_CONTEXT_BY_SENDER, prescription_chat
 from triage_agent import TRIAGE_CONTEXT_BY_SENDER, triage_chat_response  # noqa: E402
 import orchestrator_agent  # noqa: E402
 from orchestrator_agent import ORCHESTRATOR_CONTEXT_BY_SENDER, OrchestratorSession, orchestrator_chat_response  # noqa: E402
-from telegram_omegaclaw_bridge import TelegramConfig, handle_text, split_telegram_message, telegram_sender_id  # noqa: E402
+from telegram_omegaclaw_bridge import (  # noqa: E402
+    SUPPORTED_DOCUMENT_CONTENT_TYPES,
+    TelegramConfig,
+    TelegramIncoming,
+    _best_photo_file_id,
+    _update_incoming,
+    handle_media,
+    handle_text,
+    split_telegram_message,
+    telegram_sender_id,
+)
 import email_delivery  # noqa: E402
 
 
@@ -1127,6 +1137,156 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("Metformin", followup_response)
         self.assertIn("usually is not a single required order", followup_response)
         self.assertNotIn("upload", followup_response.lower())
+
+    def test_telegram_text_only_routes_to_orchestrator(self):
+        chat_id = 700001
+        sender = telegram_sender_id(chat_id)
+        PRESCRIPTION_CONTEXT_BY_SENDER.pop(sender, None)
+
+        config = TelegramConfig(token="test", allowed_chat_ids=set(), poll_seconds=1.5)
+        response = handle_text(config, chat_id, "I have a bad cough near USC. Can you book me a doctor?")
+
+        self.assertIn("doctor", response.lower())
+        self.assertNotIn("prescription photo", response.lower())
+
+    def test_telegram_update_incoming_picks_largest_photo(self):
+        update = {
+            "message": {
+                "chat": {"id": 700002},
+                "caption": "help me with this prescription",
+                "photo": [
+                    {"file_id": "small", "file_size": 1000, "width": 90, "height": 90},
+                    {"file_id": "medium", "file_size": 5000, "width": 320, "height": 320},
+                    {"file_id": "large", "file_size": 22000, "width": 1280, "height": 1280},
+                ],
+            }
+        }
+        incoming = _update_incoming(update)
+
+        self.assertEqual(incoming.chat_id, 700002)
+        self.assertEqual(incoming.file_id, "large")
+        self.assertEqual(incoming.text, "help me with this prescription")
+        self.assertEqual(_best_photo_file_id(update["message"]), "large")
+
+    def test_telegram_update_incoming_accepts_supported_documents(self):
+        for content_type in ["application/pdf", "image/png", "image/jpeg", "image/webp", "image/avif"]:
+            update = {
+                "message": {
+                    "chat": {"id": 700003},
+                    "document": {
+                        "file_id": f"doc-{content_type}",
+                        "mime_type": content_type,
+                        "file_name": f"rx.{content_type.split('/')[-1]}",
+                    },
+                }
+            }
+            incoming = _update_incoming(update)
+            self.assertEqual(incoming.file_id, f"doc-{content_type}")
+            self.assertEqual(incoming.content_type, content_type)
+            self.assertIsNone(incoming.unsupported_reason)
+        self.assertIn("application/pdf", SUPPORTED_DOCUMENT_CONTENT_TYPES)
+
+    def test_telegram_update_incoming_rejects_unsupported_document(self):
+        update = {
+            "message": {
+                "chat": {"id": 700004},
+                "document": {
+                    "file_id": "doc-zip",
+                    "mime_type": "application/zip",
+                    "file_name": "rx.zip",
+                },
+            }
+        }
+        incoming = _update_incoming(update)
+
+        self.assertIsNone(incoming.file_id)
+        self.assertIsNotNone(incoming.unsupported_reason)
+        self.assertIn("PDF", incoming.unsupported_reason)
+
+    def test_telegram_handle_media_calls_prescription_path_and_remembers(self):
+        from prescription_agent import PrescriptionSession
+        from prescription_scanner import PrescriptionItem
+
+        chat_id = 700005
+        sender = telegram_sender_id(chat_id)
+        PRESCRIPTION_CONTEXT_BY_SENDER.pop(sender, None)
+
+        rx_bytes = b"%PDF fake bytes for telegram media test"
+        config = TelegramConfig(token="test", allowed_chat_ids=set(), poll_seconds=1.5)
+        captured_request: dict[str, PrescriptionDocumentRequest] = {}
+
+        def fake_scan(ctx, scan_sender, request):
+            from models import CareResult
+
+            captured_request["request"] = request
+            PRESCRIPTION_CONTEXT_BY_SENDER[scan_sender] = PrescriptionSession(
+                extracted_text="Amoxicillin 500 mg 3 times a day",
+                summary=(
+                    "I found 2 medicines on this prescription:\n"
+                    "1. Amoxicillin 500 mg - 3 times a day\n"
+                    "2. Metformin 500 mg - twice a day"
+                ),
+                items=[
+                    PrescriptionItem(
+                        medication="Amoxicillin",
+                        dose="500 mg",
+                        directions="3 times a day",
+                    ),
+                    PrescriptionItem(
+                        medication="Metformin",
+                        dose="500 mg",
+                        directions="twice a day",
+                    ),
+                ],
+            )
+            return CareResult(
+                case_id=request.case_id,
+                agent_name="careloop-prescription-explainer",
+                status="completed",
+                summary=PRESCRIPTION_CONTEXT_BY_SENDER[scan_sender].summary,
+                next_actions=[],
+            )
+
+        with patch("telegram_omegaclaw_bridge.download_telegram_file") as fake_download, patch(
+            "telegram_omegaclaw_bridge._scan_and_remember", side_effect=fake_scan
+        ):
+            fake_download.return_value = (rx_bytes, "application/pdf")
+            incoming = TelegramIncoming(
+                chat_id=chat_id,
+                text="help me with this prescription",
+                file_id="rx-doc-1",
+                content_type="application/pdf",
+            )
+            response = handle_media(config, incoming)
+
+        self.assertIn("Amoxicillin", response)
+        self.assertIn("Metformin", response)
+        self.assertIn("pharmacist or clinician", response.lower())
+        self.assertIn(sender, PRESCRIPTION_CONTEXT_BY_SENDER)
+
+        request = captured_request["request"]
+        self.assertEqual(request.user_id, sender)
+        self.assertEqual(request.content_type, "application/pdf")
+        self.assertTrue(request.document_base64)
+        self.assertEqual(request.document_text, "help me with this prescription")
+
+        followup = handle_text(config, chat_id, "is there any order to take the medications")
+        self.assertIn("Amoxicillin", followup)
+        self.assertIn("usually is not a single required order", followup)
+
+        PRESCRIPTION_CONTEXT_BY_SENDER.pop(sender, None)
+
+    def test_telegram_handle_media_unsupported_returns_clear_message(self):
+        config = TelegramConfig(token="test", allowed_chat_ids=set(), poll_seconds=1.5)
+        incoming = TelegramIncoming(
+            chat_id=700006,
+            text=None,
+            unsupported_reason="Unsupported document type: application/zip. Please send a PDF, JPEG, PNG, WEBP, or AVIF prescription, or paste the label text.",
+        )
+        response = handle_media(config, incoming)
+
+        self.assertIn("Unsupported", response)
+        self.assertIn("PDF", response)
 
 
 if __name__ == "__main__":
