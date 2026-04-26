@@ -27,7 +27,9 @@ layer is included yet.
   target. It recommends over-the-counter medicine based on the user's query/address,
   charges a FET service fee, creates an order record, and returns checkout handoff.
 - `careloop-prescription-explainer` — senior-friendly mocked prescription explanations.
-- `careloop-appointment-booking` — mocked doctor search, booking, and prep checklist.
+- `careloop-appointment-assistant` — paid real-data appointment search and booking
+  handoff specialist. It searches visible booking/provider data, returns links, and
+  keeps state for follow-up questions.
 - `careloop-caregiver-notifier` — OmegaClaw-friendly caregiver update specialist. It
   turns care events or upstream `CareResult` messages into SMS/email-style caregiver
   notifications with urgency labels, clear next steps, and medication-safety language.
@@ -113,6 +115,28 @@ Write an SMS to my daughter that Dad's allergy medicine checkout is ready.
 Write an email to my son that Mom's doctor appointment is booked tomorrow at 10:30 AM.
 Urgent caregiver alert: Mom has chest pain and cannot breathe.
 ```
+
+## Appointment Assistant Agent
+
+`careloop-appointment-assistant` is independently usable from ASI:One. It charges a
+0.1 FET CareLoop service fee, then searches real public appointment/provider data. When
+`BROWSER_USE_API_KEY` is set, it uses Browser Use Cloud to inspect visible booking pages
+such as Zocdoc, Healthgrades, provider sites, urgent care pages, and Google Business
+profiles. If Browser Use is unavailable, it falls back to the official CMS NPPES public
+provider registry plus booking handoff links. It shows cost and earliest availability
+only when the live source publishes them.
+
+Example ASI:One prompts:
+
+```text
+Find a primary care doctor near USC Village this week with Medicare.
+Find a dermatologist near Westwood.
+Which option is closest?
+```
+
+Direct automatic booking requires a partner booking API such as Zocdoc for Developers.
+The agent is structured so that can be added when credentials are available; until then,
+it returns a real booking handoff link and does not claim the appointment is confirmed.
 
 ## MCP Servers (Claude Code)
 

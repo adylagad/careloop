@@ -12,13 +12,17 @@ sys.path.insert(0, str(AGENTS))
 os.environ["BROWSER_USE_API_KEY"] = ""
 
 from domain import (  # noqa: E402
+    APPOINTMENT_SERVICE_FEE_FET,
     _mock_otc_catalog,
+    appointment_unpaid_result,
+    build_appointment_payment_quote,
     build_otc_order_quote,
     build_pharmacy_fulfillment_status,
     explain_prescription_document,
     explain_prescription,
     format_otc_order_preview,
     is_otc_order_intent,
+    is_appointment_intent,
     is_pharmacy_status_intent,
     notify_caregiver,
     notify_caregiver_from_result,
@@ -30,6 +34,8 @@ from domain import (  # noqa: E402
     triage_request,
 )
 from models import CareRequest, PaymentQuote, PrescriptionDocumentRequest  # noqa: E402
+from appointment_agent import APPOINTMENT_CONTEXT_BY_SENDER, appointment_chat_response  # noqa: E402
+from appointment_data import parse_browser_appointment_text  # noqa: E402
 from caregiver_agent import CAREGIVER_CONTEXT_BY_SENDER, caregiver_chat_response  # noqa: E402
 from pharmacy_agent import PHARMACY_CONTEXT_BY_SENDER, pharmacy_chat_response  # noqa: E402
 from pharmacy_agent import PAYMENT_REQUEST_VERSION, PendingOrderPayment, _load_pending_by_sender, _pending_payment_message, _pending_requires_refresh, _request_fingerprint, _store_pending, pending_by_sender, pending_orders  # noqa: E402
@@ -294,6 +300,42 @@ class AgentLogicTests(unittest.TestCase):
         self.assertIn("CareLoop Caregiver Notifier", response)
         self.assertIn("SMS", response)
         self.assertNotIn("the patient has a care coordination update", response)
+
+    def test_appointment_assistant_requests_payment_before_live_search(self):
+        sender = "appointment-payment-user"
+        APPOINTMENT_CONTEXT_BY_SENDER.pop(sender, None)
+
+        response = appointment_chat_response(
+            None,
+            sender,
+            "Find a primary care doctor near USC Village this week with Medicare.",
+        )
+
+        self.assertTrue(is_appointment_intent("Find a primary care doctor near USC Village"))
+        self.assertIn("Service fee required", response)
+        self.assertIn(f"{APPOINTMENT_SERVICE_FEE_FET} FET", response)
+        self.assertNotIn("Real appointment options found", response)
+
+    def test_browser_appointment_text_parser(self):
+        parsed = parse_browser_appointment_text(
+            "- UCLA Health Primary Care — Family Medicine — 200 UCLA Medical Plaza, Los Angeles — "
+            "Tomorrow 10:30 AM — not published — https://www.uclahealth.org/appointments\n"
+            "- Bad row — missing — fields"
+        )
+
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].provider_name, "UCLA Health Primary Care")
+        self.assertEqual(parsed[0].estimated_cost, "not published")
+        self.assertEqual(parsed[0].source, "Browser Use live booking search")
+
+    def test_appointment_payment_quote_and_unpaid_result(self):
+        request = self.make_request("Find a dermatologist near Westwood")
+        quote = build_appointment_payment_quote(request)
+        unpaid = appointment_unpaid_result(request, "demo reject")
+
+        self.assertEqual(quote.amount, APPOINTMENT_SERVICE_FEE_FET)
+        self.assertEqual(quote.payment_method, "fet_direct")
+        self.assertEqual(unpaid.status, "payment_required")
 
     def test_triage_blocks_emergency(self):
         result = triage_request(self.make_request("My dad has chest pain and cannot breathe"))

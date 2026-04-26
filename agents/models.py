@@ -117,3 +117,30 @@ class PharmacyOrderQuote(Model):
     offline_price_options: list[OTCPriceOption] | None = None
     status: str
     payment_quote: PaymentQuote
+
+
+class AppointmentOption(Model):
+    provider_name: str
+    specialty: str
+    location: str
+    phone: str | None = None
+    earliest_available: str = "availability not published"
+    estimated_cost: str = "cost not published"
+    booking_url: str
+    profile_url: str | None = None
+    source: str
+    npi: str | None = None
+    notes: str | None = None
+
+
+class AppointmentSearchQuote(Model):
+    case_id: str
+    specialty: str
+    location: str
+    insurance: str | None = None
+    urgency: str = "routine"
+    options: list[AppointmentOption]
+    selected_option: AppointmentOption | None = None
+    data_sources: list[str]
+    status: str
+    payment_quote: PaymentQuote

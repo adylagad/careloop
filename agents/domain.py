@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from models import (
+    AppointmentSearchQuote,
     CareRequest,
     CareResult,
     OTCProduct,
@@ -10,6 +11,13 @@ from models import (
     PharmacyOrderQuote,
     PharmacyRecommendation,
     PrescriptionDocumentRequest,
+)
+from appointment_data import (
+    appointment_options,
+    infer_appointment_specialty,
+    infer_appointment_urgency,
+    infer_insurance,
+    infer_location,
 )
 from pharmacy_data import (
     browseruse_price_options,
@@ -28,6 +36,8 @@ PHARMACY_SERVICE_FEE_FET = "0.1"
 PHARMACY_MONITOR_CHECK_MINUTES = 15
 PHARMACY_ASSISTANT_AGENT_NAME = "careloop-pharmacy-assistant"
 OTC_ORDER_SERVICE_FEE_FET = "0.1"
+APPOINTMENT_SERVICE_FEE_FET = "0.1"
+APPOINTMENT_AGENT_NAME = "careloop-appointment-assistant"
 
 
 def make_case_id(prefix: str = "case") -> str:
@@ -839,23 +849,196 @@ def explain_prescription_document(request: PrescriptionDocumentRequest) -> CareR
     return result_from_extracted_prescription(request, extract_prescription_text(request))
 
 
-def book_appointment(request: CareRequest) -> CareResult:
-    summary = (
-        "Mock appointment booked with Westwood Senior Care Clinic for tomorrow at 10:30 AM. "
-        "Provider: Dr. Maya Chen, geriatric primary care. Bring medication list, insurance card, "
-        "recent symptoms, and caregiver contact."
+def is_appointment_intent(text: str) -> bool:
+    normalized = normalize_text(text)
+    action_terms = [
+        "appointment",
+        "doctor",
+        "provider",
+        "physician",
+        "clinic",
+        "book",
+        "schedule",
+        "find",
+        "see a",
+        "primary care",
+        "urgent care",
+        "dermatologist",
+        "cardiologist",
+        "dentist",
+    ]
+    return any(term in normalized for term in action_terms)
+
+
+def build_appointment_payment_quote(request: CareRequest) -> PaymentQuote:
+    return PaymentQuote(
+        case_id=request.case_id,
+        service_name="CareLoop Appointment Search",
+        amount=APPOINTMENT_SERVICE_FEE_FET,
+        reference=f"careloop-appointment-search-{request.case_id}-{uuid4().hex[:8]}",
     )
+
+
+def build_appointment_search_quote(
+    request: CareRequest,
+    payment_quote: PaymentQuote | None = None,
+) -> AppointmentSearchQuote:
+    context = request.context or {}
+    specialty = str(context.get("specialty") or infer_appointment_specialty(request.text))
+    location = str(context.get("location") or infer_location(request.text))
+    insurance = context.get("insurance")
+    insurance = str(insurance) if insurance else infer_insurance(request.text)
+    urgency = str(context.get("urgency") or infer_appointment_urgency(request.text))
+    options, data_sources = appointment_options(specialty, location, insurance, urgency)
+    selected = options[0] if options else None
+    quote = payment_quote or build_appointment_payment_quote(request)
+    return AppointmentSearchQuote(
+        case_id=request.case_id,
+        specialty=specialty,
+        location=location,
+        insurance=insurance,
+        urgency=urgency,
+        options=options,
+        selected_option=selected,
+        data_sources=data_sources,
+        status="options_ready" if options else "no_options_found",
+        payment_quote=quote,
+    )
+
+
+def format_appointment_payment_prompt(request: CareRequest, quote: PaymentQuote) -> str:
+    specialty = infer_appointment_specialty(request.text)
+    location = infer_location(request.text)
+    insurance = infer_insurance(request.text)
+    insurance_line = f"\nInsurance preference: {insurance}" if insurance else ""
+    return (
+        "CareLoop Appointment Assistant\n\n"
+        f"I can run a live appointment search for {specialty} near {location}.{insurance_line}\n\n"
+        "Service fee required before I search live booking pages and public provider records:\n"
+        f"- Amount: {quote.amount} {quote.currency}\n"
+        f"- Method: {quote.payment_method}\n"
+        f"- Reference: {quote.reference}\n\n"
+        "After payment, I will show the real providers/booking links I can verify, visible availability or cost "
+        "when published, and the safest next step. I will not claim a booking is confirmed unless a real booking API confirms it."
+    )
+
+
+def format_appointment_search_preview(search: AppointmentSearchQuote) -> str:
+    sources = "\n".join(f"- {source}" for source in search.data_sources) or "- no source available"
+    if search.options:
+        option_lines = "\n".join(
+            (
+                f"{index}. {option.provider_name} — {option.specialty}\n"
+                f"   Location: {option.location}\n"
+                f"   Availability: {option.earliest_available}\n"
+                f"   Cost: {option.estimated_cost}\n"
+                f"   Phone: {option.phone or 'not published'}\n"
+                f"   Book/check: {option.booking_url}\n"
+                f"   Source: {option.source}"
+            )
+            for index, option in enumerate(search.options, start=1)
+        )
+    else:
+        option_lines = "No real appointment options were found for this search right now."
+
+    selected = search.selected_option
+    selected_text = (
+        f"{selected.provider_name}: open {selected.booking_url}"
+        if selected
+        else "No selected option yet"
+    )
+    insurance = search.insurance or "not specified"
+    return (
+        "CareLoop Appointment Assistant\n\n"
+        f"Need: {search.specialty}\n"
+        f"Location: {search.location}\n"
+        f"Insurance: {insurance}\n"
+        f"Urgency: {search.urgency}\n\n"
+        f"Data sources:\n{sources}\n\n"
+        f"Real appointment options found:\n{option_lines}\n\n"
+        f"Recommended next step: {selected_text}\n\n"
+        f"CareLoop service fee: {search.payment_quote.amount} FET via {search.payment_quote.payment_method}\n"
+        f"Payment reference: {search.payment_quote.reference}\n\n"
+        "Cost note: exact patient cost is often not public until the booking page verifies insurance or cash-pay policy. "
+        "I only show cost when the source publishes it.\n\n"
+        "Safety note: this is appointment logistics support, not diagnosis. For emergency symptoms, call emergency services."
+    )
+
+
+def appointment_paid_result(request: CareRequest, search: AppointmentSearchQuote) -> CareResult:
+    selected = search.selected_option
+    if selected:
+        summary = (
+            f"Appointment search completed for {search.specialty} near {search.location}. "
+            f"Best handoff: {selected.provider_name}. Book/check here: {selected.booking_url}"
+        )
+    else:
+        summary = f"Appointment search completed for {search.specialty} near {search.location}, but no live options were found."
     return CareResult(
         case_id=request.case_id,
-        agent_name="careloop-appointment-booking",
-        status="completed",
+        agent_name=APPOINTMENT_AGENT_NAME,
+        status="booking_handoff_ready" if selected else "no_options_found",
         summary=summary,
         next_actions=[
-            "Confirm transportation.",
-            "Prepare symptom notes and medication list.",
-            "Notify caregiver of appointment time.",
+            "Open the booking link to choose a slot and enter required patient details.",
+            "Confirm insurance, cash price, and cancellation policy before final booking.",
+            "Notify caregiver after the appointment is booked.",
         ],
-        timeline_events=["Appointment options searched", "Appointment booked"],
+        timeline_events=[
+            "Appointment search paid",
+            "Real provider options searched",
+            "Booking handoff prepared",
+        ],
+    )
+
+
+def appointment_unpaid_result(request: CareRequest, reason: str) -> CareResult:
+    return CareResult(
+        case_id=request.case_id,
+        agent_name=APPOINTMENT_AGENT_NAME,
+        status="payment_required",
+        summary=f"Appointment search is ready to run, but the CareLoop service fee was not paid. Reason: {reason}",
+        next_actions=[
+            f"Approve the {APPOINTMENT_SERVICE_FEE_FET} FET service fee to run the live search.",
+            "Reject payment if you do not want CareLoop to search booking pages/provider records.",
+        ],
+        timeline_events=["Payment requested for appointment search"],
+    )
+
+
+def book_appointment(request: CareRequest) -> CareResult:
+    if not (request.context or {}).get("live_search"):
+        specialty = infer_appointment_specialty(request.text)
+        location = infer_location(request.text)
+        return CareResult(
+            case_id=request.case_id,
+            agent_name=APPOINTMENT_AGENT_NAME,
+            status="payment_required",
+            summary=(
+                f"The appointment assistant can run a paid live search for {specialty} near {location}. "
+                "Use the appointment specialist directly in ASI:One to pay the FET service fee and get real provider links."
+            ),
+            next_actions=[
+                f"Ask {APPOINTMENT_AGENT_NAME} for the appointment search.",
+                "Approve the FET service fee in chat.",
+                "Use the returned booking handoff link to confirm the final appointment.",
+            ],
+            timeline_events=["Appointment specialist identified", "Payment required for live appointment search"],
+        )
+
+    search = build_appointment_search_quote(request)
+    summary = format_appointment_search_preview(search)
+    return CareResult(
+        case_id=request.case_id,
+        agent_name=APPOINTMENT_AGENT_NAME,
+        status="booking_handoff_ready" if search.selected_option else "no_options_found",
+        summary=summary,
+        next_actions=[
+            "Open the booking handoff link to choose and confirm a real slot.",
+            "Confirm insurance and cost on the provider booking page.",
+            "Notify caregiver after final confirmation.",
+        ],
+        timeline_events=["Appointment options searched", "Booking handoff prepared"],
     )
 
 
