@@ -9,3 +9,10 @@ venv/
 .DS_Store
 agent*_data.json
 demo_private/
+
+# Obsidian files
+vault/.obsidian/workspace.json
+vault/.obsidian/workspace-mobile.json
+vault/.obsidian/plugins/obsidian-git/data.json
+vault/.trash/
+

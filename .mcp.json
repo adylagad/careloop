@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "agentverse-full": {
+      "type": "sse",
+      "url": "https://mcp.agentverse.ai/sse",
+      "headers": {
+        "Authorization": "Bearer ${AGENTVERSE_API_KEY}"
+      }
+    },
+    "agentverse-lite": {
+      "type": "http",
+      "url": "https://mcp-lite.agentverse.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer ${AGENTVERSE_API_KEY}"
+      }
+    },
+    "obsidian": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@bitbonsai/mcpvault@latest",
+        "/Users/aditya/repos/hacks/careloop/vault"
+      ]
+    }
+  }
+}
